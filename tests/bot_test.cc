@@ -32,7 +32,7 @@ TEST(BotTest, RejectsUnimplementedStagesAndMissingLeaves) {
   EXPECT_THROW(Bot(gaddag, simulation), std::invalid_argument);
   BotConfig endgame;
   endgame.endgame.enabled = true;
-  EXPECT_THROW(Bot(gaddag, endgame), std::invalid_argument);
+  EXPECT_NO_THROW(Bot(gaddag, endgame));
   BotConfig no_leaves;
   no_leaves.leaves = nullptr;
   EXPECT_THROW(Bot(gaddag, no_leaves), std::invalid_argument);

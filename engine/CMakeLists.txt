@@ -4,6 +4,7 @@ add_library(scrabble_engine
   src/board.cc
   src/bot.cc
   src/cross_checks.cc
+  src/endgame.cc
   src/gaddag.cc
   src/game.cc
   src/gcg.cc

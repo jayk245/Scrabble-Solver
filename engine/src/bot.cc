@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cassert>
 #include <cstddef>
+#include <optional>
 #include <stdexcept>
 #include <utility>
 
@@ -17,11 +18,15 @@ Bot::Bot(const Gaddag& gaddag, BotConfig config)
     throw std::invalid_argument("simulation is not implemented yet");
   }
   if (config_.endgame.enabled) {
-    throw std::invalid_argument("endgame search is not implemented yet");
+    endgame_ = std::make_unique<EndgameSolver>(
+        gaddag, EndgameOptions{.tt_size_mb = config_.endgame.tt_size_mb});
   }
 }
 
 Move Bot::ChooseMove(const PlayerView& view, Rng& /*rng*/) {
+  if (endgame_ != nullptr && view.bag_size == 0) {
+    if (const std::optional<Move> move = SolveEndgame(view)) return *move;
+  }
   EvaluateStatic(view);
   // Never empty: the pass is always generated.
   assert(!moves_.empty());
@@ -44,6 +49,35 @@ void Bot::RankMoves(const PlayerView& view, std::size_t max_moves,
       [](const Move& a, const Move& b) { return a.equity > b.equity; });
   out.assign(moves_.begin(),
              moves_.begin() + static_cast<std::ptrdiff_t>(keep));
+}
+
+std::optional<Move> Bot::SolveEndgame(const PlayerView& view) {
+  assert(view.position != nullptr);
+  // With the bag empty every unseen tile is on the opponent's rack.
+  if (view.unseen_size < 1 || view.unseen_size > kRackSize ||
+      view.rack.IsEmpty()) {
+    return std::nullopt;
+  }
+  EndgameState state;
+  Rack& opponent = state.racks[static_cast<std::size_t>(1 - view.player)];
+  for (Letter letter = 0; letter < kAlphabetSize; ++letter) {
+    for (int n = 0; n < view.unseen[letter]; ++n) {
+      if (opponent.Size() == kRackSize) return std::nullopt;
+      opponent.Add(letter);
+    }
+  }
+  if (opponent.IsEmpty()) return std::nullopt;
+  state.racks[static_cast<std::size_t>(view.player)] = view.rack;
+  state.to_move = view.player;
+  state.spread = view.score - view.opponent_score;
+  state.scoreless_turns = view.scoreless_turns;
+  state.end_rules = view.end_rules;
+  endgame_position_.emplace(*view.position);
+  const EndgameResult result =
+      endgame_->Solve(*endgame_position_, state,
+                      {.max_nodes = config_.endgame.node_limit,
+                       .max_time_ms = config_.endgame.time_limit_ms});
+  return result.best_move;
 }
 
 void Bot::EvaluateStatic(const PlayerView& view) {

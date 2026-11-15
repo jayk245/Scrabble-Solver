@@ -1,0 +1,200 @@
+#include "scrabble/leave_evaluator.h"
+
+#include <algorithm>
+#include <array>
+#include <bit>
+#include <cassert>
+#include <cerrno>
+#include <cstdlib>
+#include <fstream>
+#include <optional>
+#include <stdexcept>
+#include <string>
+#include <string_view>
+#include <vector>
+
+namespace scrabble {
+namespace {
+
+// Hand-set single-tile values, loosely after published superleave tables:
+// the blank and S are the best tiles to keep, Q and V the worst.
+constexpr std::array<double, kAlphabetSize> kTileLeaveValues = {
+    1.0,  -2.0, 0.5,  0.5,  2.0,  -2.0, -2.0, 0.5, -0.5,  // A-I
+    -3.0, -2.0, -0.5, -0.5, 0.5,  -1.0, -1.0, -7.0, 1.5,  // J-R
+    7.5,  0.5,  -3.0, -5.0, -3.0, 2.0,  -1.0, 2.0,         // S-Z
+    25.0,                                                  // blank
+};
+
+// Each extra copy of a letter (beyond the first) costs this much: duplicates
+// cut the number of distinct words a rack can form. Blanks are exempt.
+constexpr double kDuplicatePenalty = 3.0;
+
+// Cost per unit of vowel/consonant imbalance beyond one. A blank counts as
+// neither since it can be either.
+constexpr double kBalancePenalty = 2.0;
+
+constexpr bool IsVowel(Letter letter) {
+  return letter == 0 || letter == 4 || letter == 8 || letter == 14 ||
+         letter == 20;  // A E I O U
+}
+
+std::string_view Trim(std::string_view text) {
+  constexpr std::string_view kSpace = " \t\r\n";
+  const std::size_t begin = text.find_first_not_of(kSpace);
+  if (begin == std::string_view::npos) return {};
+  const std::size_t end = text.find_last_not_of(kSpace);
+  return text.substr(begin, end - begin + 1);
+}
+
+std::optional<double> ParseDouble(std::string_view text) {
+  if (text.empty()) return std::nullopt;
+  // strtod needs a terminated buffer; the copy is load-time only.
+  const std::string buffer(text);
+  char* end = nullptr;
+  errno = 0;
+  const double value = std::strtod(buffer.c_str(), &end);
+  if (errno != 0 || end != buffer.c_str() + buffer.size()) return std::nullopt;
+  return value;
+}
+
+}  // namespace
+
+LeaveEvaluator LeaveEvaluator::Heuristic() {
+  LeaveEvaluator evaluator;
+  evaluator.kind_ = Kind::kHeuristic;
+  evaluator.name_ = "heuristic";
+  return evaluator;
+}
+
+LeaveEvaluator LeaveEvaluator::Load(const std::filesystem::path& path) {
+  std::ifstream in(path);
+  if (!in) {
+    throw std::runtime_error("cannot open leave table " + path.string());
+  }
+  LeaveEvaluator evaluator = Parse(in, path.string());
+  evaluator.name_ = "table:" + path.string();
+  return evaluator;
+}
+
+LeaveEvaluator LeaveEvaluator::Parse(std::istream& in,
+                                     std::string_view source) {
+  struct Entry {
+    std::uint64_t key;
+    double value;
+    int line;
+  };
+  std::vector<Entry> entries;
+  std::string line;
+  int line_number = 0;
+  const auto fail = [&](const std::string& why) {
+    throw std::runtime_error(std::string(source) + ":" +
+                             std::to_string(line_number) + ": " + why);
+  };
+  while (std::getline(in, line)) {
+    ++line_number;
+    const std::string_view text = Trim(line);
+    if (text.empty() || text.front() == '#') continue;
+    const std::size_t comma = text.find(',');
+    if (comma == std::string_view::npos) fail("expected leave,value");
+    const std::string_view leave_text = Trim(text.substr(0, comma));
+    const std::string_view value_text = Trim(text.substr(comma + 1));
+    if (entries.empty() && leave_text == "leave" && value_text == "value") {
+      continue;  // header
+    }
+    const std::optional<Rack> leave = Rack::FromString(leave_text);
+    if (!leave || leave->IsEmpty()) fail("bad leave '" +
+                                         std::string(leave_text) + "'");
+    const std::optional<double> value = ParseDouble(value_text);
+    if (!value) fail("bad value '" + std::string(value_text) + "'");
+    entries.push_back({Key(*leave), *value, line_number});
+  }
+  if (in.bad()) fail("read error");
+
+  LeaveEvaluator evaluator;
+  evaluator.kind_ = Kind::kTable;
+  evaluator.name_ = "table:" + std::string(source);
+  // At most half full; std::bit_ceil keeps the capacity a power of two so
+  // the slot index is a shift, not a modulo.
+  const std::size_t capacity =
+      std::bit_ceil(std::max<std::size_t>(16, entries.size() * 2));
+  evaluator.keys_.assign(capacity, 0);
+  evaluator.values_.assign(capacity, 0.0);
+  evaluator.shift_ = 64 - std::countr_zero(capacity);
+  for (const Entry& entry : entries) {
+    const std::size_t before = evaluator.size_;
+    evaluator.Insert(entry.key, entry.value);
+    line_number = entry.line;
+    if (evaluator.size_ == before) fail("duplicate leave");
+  }
+  return evaluator;
+}
+
+double LeaveEvaluator::Value(const Rack& leave) const {
+  if (leave.IsEmpty()) return 0.0;
+  switch (kind_) {
+    case Kind::kZero:
+      return 0.0;
+    case Kind::kHeuristic:
+      return HeuristicValue(leave);
+    case Kind::kTable:
+      return TableValue(leave);
+  }
+  return 0.0;
+}
+
+std::uint64_t LeaveEvaluator::Key(const Rack& leave) {
+  std::uint64_t key = 0;
+  for (Letter letter = 0; letter < kAlphabetSize; ++letter) {
+    for (int n = leave.Count(letter); n > 0; --n) {
+      key = (key << 5) | (letter + 1u);
+    }
+  }
+  return key;
+}
+
+double LeaveEvaluator::HeuristicValue(const Rack& leave) const {
+  double value = 0.0;
+  int vowels = 0;
+  int consonants = 0;
+  for (Letter letter = 0; letter < kAlphabetSize; ++letter) {
+    const int count = leave.Count(letter);
+    if (count == 0) continue;
+    value += count * kTileLeaveValues[letter];
+    if (letter == kBlank) continue;
+    value -= (count - 1) * kDuplicatePenalty;
+    (IsVowel(letter) ? vowels : consonants) += count;
+  }
+  const int imbalance = vowels > consonants ? vowels - consonants
+                                            : consonants - vowels;
+  if (imbalance > 1) value -= (imbalance - 1) * kBalancePenalty;
+  return value;
+}
+
+double LeaveEvaluator::TableValue(const Rack& leave) const {
+  const std::uint64_t key = Key(leave);
+  const std::size_t mask = keys_.size() - 1;
+  // Fibonacci hashing: the multiply spreads the packed letters (which
+  // differ mostly in their low bits) across the high bits we keep.
+  for (std::size_t slot = (key * 0x9E3779B97F4A7C15ULL) >> shift_;;
+       slot = (slot + 1) & mask) {
+    if (keys_[slot] == key) return values_[slot];
+    if (keys_[slot] == 0) return 0.0;
+  }
+}
+
+void LeaveEvaluator::Insert(std::uint64_t key, double value) {
+  assert(key != 0);
+  const std::size_t mask = keys_.size() - 1;
+  for (std::size_t slot = (key * 0x9E3779B97F4A7C15ULL) >> shift_;;
+       slot = (slot + 1) & mask) {
+    if (keys_[slot] == key) return;  // duplicate: caller reports it
+    if (keys_[slot] == 0) {
+      keys_[slot] = key;
+      values_[slot] = value;
+      ++size_;
+      return;
+    }
+  }
+}
+
+}  // namespace scrabble

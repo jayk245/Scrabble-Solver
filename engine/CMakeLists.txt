@@ -1,10 +1,12 @@
 add_library(scrabble_engine
   src/bag.cc
   src/board.cc
+  src/bot.cc
   src/cross_checks.cc
   src/gaddag.cc
   src/game.cc
   src/gcg.cc
+  src/leave_evaluator.cc
   src/lexicon.cc
   src/move.cc
   src/move_generator.cc

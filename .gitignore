@@ -1,0 +1,13 @@
+# Build output
+/build/
+/out/
+compile_commands.json
+
+# Editor / OS
+.vscode/
+.idea/
+.cache/
+.DS_Store
+
+# Dictionaries are fetched separately (licensing varies by lexicon).
+/data/lexica/*.txt

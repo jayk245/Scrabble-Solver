@@ -27,13 +27,34 @@ ctest --preset release
 Use the `debug` preset for development; it enables AddressSanitizer and
 UndefinedBehaviorSanitizer.
 
+## Lexicon
+
+Word lists are not committed. Fetch the public-domain ENABLE list (verified
+by checksum) into `data/lexica/`:
+
+```sh
+scripts/fetch_lexicon.sh
+```
+
+Then compile it to a binary GADDAG, which the engine loads in milliseconds
+instead of rebuilding:
+
+```sh
+./build/release/apps/scrabble_lexicon_tool data/lexica/enable1.txt
+```
+
+This writes `data/lexica/enable1.gaddag` and prints word, node and arc
+counts, memory size and build/load times. Words are uppercased and filtered
+to 2-15 letters A-Z (168,551 of ENABLE's 172,823 entries). The ENABLE
+integration tests are skipped if the list has not been fetched.
+
 ## Roadmap
 
 | # | Milestone | Status |
 |---|-----------|--------|
 | 0 | Build system, tests, board/tile basics | ✅ |
 | 1 | Bag, rack, move representation | ✅ |
-| 2 | Lexicon + GADDAG | |
+| 2 | Lexicon + GADDAG | ✅ |
 | 3 | Scoring + cross-checks | |
 | 4 | Move generation | |
 | 5 | Greedy bot + self-play arena | |

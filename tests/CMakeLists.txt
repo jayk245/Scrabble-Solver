@@ -15,8 +15,14 @@ add_executable(scrabble_tests
   rng_test.cc
   rack_test.cc
   bag_test.cc
-  move_test.cc)
+  move_test.cc
+  letter_set_test.cc
+  gaddag_test.cc
+  lexicon_test.cc)
 target_link_libraries(scrabble_tests PRIVATE scrabble::engine GTest::gtest_main)
+# Integration tests read fetched word lists from the source tree.
+target_compile_definitions(scrabble_tests PRIVATE
+  SCRABBLE_LEXICA_DIR="${PROJECT_SOURCE_DIR}/data/lexica")
 
 include(GoogleTest)
 gtest_discover_tests(scrabble_tests)

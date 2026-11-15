@@ -1,6 +1,8 @@
 add_library(scrabble_engine
   src/bag.cc
   src/board.cc
+  src/gaddag.cc
+  src/lexicon.cc
   src/move.cc
   src/rack.cc)
 add_library(scrabble::engine ALIAS scrabble_engine)

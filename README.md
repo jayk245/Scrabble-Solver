@@ -59,6 +59,21 @@ not a bot) and reports positions/sec, moves generated/sec and average moves
 per position. `--lexicon PATH` selects a word list (default ENABLE). The
 printed checksum must stay fixed for a given seed across optimisations.
 
+## Arena
+
+```sh
+./build/release/apps/scrabble_arena --games 2000 --threads 8 --seed 1 \
+    --leaves-a heuristic --leaves-b zero
+```
+
+Plays bot configuration A against B (alternating who moves first) and
+reports A's win/loss/tie record, mean scores and spread with 95% confidence
+intervals, bingos per game and games/sec. Results depend only on `--seed`,
+never on `--threads`. Leaves are `heuristic` (default), `zero` or a
+`leave,value` CSV file. `--rules naspa|wespa` selects end-of-game scoring,
+`--gcg-dir DIR` writes every game as GCG, and `--log FILE` writes a JSONL
+move log (schema in `engine/include/scrabble/arena.h`) for leave training.
+
 ## Roadmap
 
 | # | Milestone | Status |
@@ -68,7 +83,7 @@ printed checksum must stay fixed for a given seed across optimisations.
 | 2 | Lexicon + GADDAG | ✅ |
 | 3 | Scoring + cross-checks | ✅ |
 | 4 | Move generation | ✅ |
-| 5 | Self-play arena | |
+| 5 | Self-play arena | ✅ |
 | 6 | Learned rack-leave values | |
 | 7 | Monte Carlo simulation | |
 | 8 | Endgame solver | |

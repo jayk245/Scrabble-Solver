@@ -1,4 +1,5 @@
 add_library(scrabble_engine
+  src/arena.cc
   src/bag.cc
   src/board.cc
   src/bot.cc
@@ -19,4 +20,8 @@ add_library(scrabble::engine ALIAS scrabble_engine)
 target_include_directories(scrabble_engine PUBLIC
   ${CMAKE_CURRENT_SOURCE_DIR}/include)
 
-target_link_libraries(scrabble_engine PUBLIC scrabble::compiler_options)
+find_package(Threads REQUIRED)
+# The arena runs games on a std::thread pool.
+target_link_libraries(scrabble_engine
+  PUBLIC scrabble::compiler_options
+  PRIVATE Threads::Threads)

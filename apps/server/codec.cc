@@ -197,20 +197,6 @@ Json MoveToJson(const Move& move, const Rack* rack) {
   return out;
 }
 
-Rack LeaveAfter(const Rack& rack, const Move& move) {
-  Rack leave = rack;
-  for (int i = 0; i < move.num_tiles; ++i) {
-    const MoveTile tile = move.tiles[static_cast<std::size_t>(i)];
-    if (move.type == MoveType::kPlace) {
-      if (tile.is_play_through()) continue;
-      leave.Remove(tile.is_blank() ? kBlank : tile.letter());
-    } else {
-      leave.Remove(tile.letter());
-    }
-  }
-  return leave;
-}
-
 Unseen ComputeUnseen(const Board& board, const Rack& rack) {
   Unseen unseen;
   std::array<int, kAlphabetSize> used{};

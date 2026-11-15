@@ -70,10 +70,6 @@ std::string_view MoveErrorCode(MoveError error);
 // "leave" field.
 nlohmann::json MoveToJson(const Move& move, const Rack* rack = nullptr);
 
-// The rack left after `move` takes its tiles from `rack`. Precondition: the
-// rack holds them (true for any move ValidateMove() accepted).
-Rack LeaveAfter(const Rack& rack, const Move& move);
-
 // Tiles not visible to the player to move: the full distribution minus the
 // board and the rack. Counts that would go negative (more of a letter on
 // the board than the bag holds, which an analysis board allows) are clamped

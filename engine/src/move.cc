@@ -167,6 +167,20 @@ int Move::TilesUsed() const {
   return used;
 }
 
+Rack LeaveAfter(const Rack& rack, const Move& move) {
+  Rack leave = rack;
+  for (std::size_t i = 0; i < move.num_tiles; ++i) {
+    const MoveTile tile = move.tiles[i];
+    if (move.type == MoveType::kPlace) {
+      if (tile.is_play_through()) continue;
+      leave.Remove(tile.is_blank() ? kBlank : tile.letter());
+    } else {
+      leave.Remove(tile.letter());
+    }
+  }
+  return leave;
+}
+
 std::string Move::ToString() const {
   std::string out;
   switch (type) {

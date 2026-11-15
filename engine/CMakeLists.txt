@@ -3,6 +3,8 @@ add_library(scrabble_engine
   src/board.cc
   src/cross_checks.cc
   src/gaddag.cc
+  src/game.cc
+  src/gcg.cc
   src/lexicon.cc
   src/move.cc
   src/move_generator.cc

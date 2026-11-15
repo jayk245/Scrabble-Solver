@@ -23,6 +23,8 @@ add_executable(scrabble_tests
   scoring_test.cc
   move_validation_test.cc
   move_generator_test.cc
+  game_test.cc
+  gcg_test.cc
   test_util.cc)
 target_link_libraries(scrabble_tests PRIVATE scrabble::engine GTest::gtest_main)
 # Integration tests read fetched word lists from the source tree.

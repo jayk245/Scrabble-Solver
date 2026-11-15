@@ -138,6 +138,11 @@ struct Move {
   bool operator==(const Move&) const = default;
 };
 
+// The tiles left on `rack` after `move` takes its rack tiles: the leave.
+// A pass leaves the whole rack. Precondition: `rack` holds every tile the
+// move uses (as ValidateMove() guarantees).
+Rack LeaveAfter(const Rack& rack, const Move& move);
+
 static_assert(sizeof(MoveTile) == 1);
 static_assert(sizeof(Move) == 32, "Move layout changed; check packing");
 static_assert(std::is_trivially_copyable_v<Move>);

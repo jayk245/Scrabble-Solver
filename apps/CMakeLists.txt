@@ -10,6 +10,11 @@ target_link_libraries(scrabble_movegen_bench PRIVATE scrabble::engine)
 target_compile_definitions(scrabble_movegen_bench PRIVATE
   SCRABBLE_LEXICA_DIR="${PROJECT_SOURCE_DIR}/data/lexica")
 
+add_executable(scrabble_endgame_bench endgame_bench/main.cc)
+target_link_libraries(scrabble_endgame_bench PRIVATE scrabble::engine)
+target_compile_definitions(scrabble_endgame_bench PRIVATE
+  SCRABBLE_LEXICA_DIR="${PROJECT_SOURCE_DIR}/data/lexica")
+
 add_executable(scrabble_arena arena/main.cc)
 target_link_libraries(scrabble_arena PRIVATE scrabble::engine)
 target_compile_definitions(scrabble_arena PRIVATE

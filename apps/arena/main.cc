@@ -3,10 +3,15 @@
 // Usage: scrabble_arena [--games N] [--threads T] [--seed S]
 //                       [--lexicon PATH] [--leaves-a L] [--leaves-b L]
 //                       [--rules naspa|wespa] [--gcg-dir DIR] [--log FILE]
+//                       [--endgame-a] [--endgame-b] [--endgame-nodes N]
+//                       [--endgame-ms T]
 //
 // L is "heuristic" (default), "zero", or the path of a leave table CSV (see
 // leave_evaluator.h). --log writes the JSONL training log documented in
-// arena.h. Results are identical for any --threads value.
+// arena.h. --endgame-a / --endgame-b turn on the endgame solver for that
+// configuration, limited to --endgame-nodes nodes (default 2,000,000) and,
+// if given, --endgame-ms milliseconds per move. Results are identical for
+// any --threads value, unless --endgame-ms makes them timing-dependent.
 
 #include <algorithm>
 #include <cstdint>
@@ -41,12 +46,17 @@ struct Options {
   scrabble::EndRules rules = scrabble::EndRules::kNaspa;
   std::filesystem::path gcg_dir;
   std::filesystem::path log;
+  bool endgame_a = false;
+  bool endgame_b = false;
+  std::int64_t endgame_nodes = scrabble::EndgameConfig{}.node_limit;
+  std::int64_t endgame_ms = 0;
 };
 
 constexpr std::string_view kUsage =
     " [--games N] [--threads T] [--seed S] [--lexicon PATH]\n"
     "    [--leaves-a heuristic|zero|FILE] [--leaves-b heuristic|zero|FILE]\n"
-    "    [--rules naspa|wespa] [--gcg-dir DIR] [--log FILE]\n";
+    "    [--rules naspa|wespa] [--gcg-dir DIR] [--log FILE]\n"
+    "    [--endgame-a] [--endgame-b] [--endgame-nodes N] [--endgame-ms T]\n";
 
 bool ParsePositive(const char* text, int& out) {
   char* end = nullptr;
@@ -59,6 +69,14 @@ bool ParsePositive(const char* text, int& out) {
 bool ParseArgs(int argc, char** argv, Options& options) {
   for (int i = 1; i < argc; ++i) {
     const std::string_view arg = argv[i];
+    if (arg == "--endgame-a") {
+      options.endgame_a = true;
+      continue;
+    }
+    if (arg == "--endgame-b") {
+      options.endgame_b = true;
+      continue;
+    }
     if (i + 1 >= argc) return false;
     const char* value = argv[++i];
     if (arg == "--games") {
@@ -88,6 +106,12 @@ bool ParseArgs(int argc, char** argv, Options& options) {
       options.gcg_dir = value;
     } else if (arg == "--log") {
       options.log = value;
+    } else if (arg == "--endgame-nodes" || arg == "--endgame-ms") {
+      char* end = nullptr;
+      const long long n = std::strtoll(value, &end, 10);
+      if (*end != '\0' || n < 0) return false;
+      (arg == "--endgame-nodes" ? options.endgame_nodes : options.endgame_ms) =
+          n;
     } else {
       return false;
     }
@@ -95,7 +119,8 @@ bool ParseArgs(int argc, char** argv, Options& options) {
   return true;
 }
 
-scrabble::BotConfig MakeBot(const std::string& leaves) {
+scrabble::BotConfig MakeBot(const std::string& leaves, bool endgame,
+                            const Options& options) {
   scrabble::BotConfig config;
   if (leaves == "heuristic") {
     config.leaves = std::make_shared<const scrabble::LeaveEvaluator>(
@@ -108,6 +133,12 @@ scrabble::BotConfig MakeBot(const std::string& leaves) {
         scrabble::LeaveEvaluator::Load(leaves));
   }
   config.name = config.leaves->name();
+  if (endgame) {
+    config.endgame.enabled = true;
+    config.endgame.node_limit = options.endgame_nodes;
+    config.endgame.time_limit_ms = options.endgame_ms;
+    config.name += "+endgame";
+  }
   return config;
 }
 
@@ -119,8 +150,8 @@ int Run(const Options& options) {
   config.threads = options.threads;
   config.seed = options.seed;
   config.game.end_rules = options.rules;
-  config.bot_a = MakeBot(options.leaves_a);
-  config.bot_b = MakeBot(options.leaves_b);
+  config.bot_a = MakeBot(options.leaves_a, options.endgame_a, options);
+  config.bot_b = MakeBot(options.leaves_b, options.endgame_b, options);
   config.gcg_dir = options.gcg_dir;
   std::ofstream log;
   if (!options.log.empty()) {
@@ -162,6 +193,11 @@ int Run(const Options& options) {
   std::printf("Turns/game    %.1f\n", s.turns_per_game);
   std::printf("Time          %.2f s (%.1f games/s)\n", result.seconds,
               result.seconds > 0 ? s.games / result.seconds : 0.0);
+  // Thread-seconds per game: what one game costs on one core.
+  std::printf("Time/game     %.1f ms per thread\n",
+              s.games > 0 ? 1e3 * result.seconds *
+                                std::min(options.threads, s.games) / s.games
+                          : 0.0);
   return 0;
 }
 

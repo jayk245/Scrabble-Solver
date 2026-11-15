@@ -100,6 +100,66 @@ never on `--threads`. Leaves are `heuristic` (default), `zero` or a
 `--gcg-dir DIR` writes every game as GCG, and `--log FILE` writes a JSONL
 move log (schema in `engine/include/scrabble/arena.h`) for leave training.
 
+## Training leave values
+
+A move's static equity is its score plus the value of the tiles it keeps
+(the *leave*). Learned leave values come from self-play:
+
+```sh
+python3 tools/leaves/train.py      # after a release build; numpy only
+```
+
+Each generation plays 200,000 self-play games with the previous
+generation's leaves (generation 0 is the hand-written heuristic), streams
+the arena's JSONL log through a named pipe (so no multi-GB log is written
+to disk), and fits a value for every possible leave of 1-6 tiles:
+
+1. **Target.** For each move made with at least 7 tiles in the bag, the
+   mover's net points over the rest of the game, excluding the move itself
+   (`final_spread - spread - score`). Targets are centred per bag size and
+   weighted by the inverse of each bag size's variance.
+2. **Prior.** A weighted least-squares linear model over simple features:
+   copies held of each tile, a shared duplicate penalty, leave length,
+   vowel/consonant balance and Q without U. It values every leave,
+   including the ~820,000 never seen.
+3. **Shrinkage.** An observed leave's value is `(W·mean + k·prior) / (W + k)`,
+   with `k` (per leave length) estimated from the data (empirical Bayes), so
+   rarely seen leaves stay close to the prior.
+
+Values are anchored so that the empty leave is worth 0, as the bot
+assumes. Two generations take about 8 minutes on 8 cores (peak memory
+about 400 MB). `--games`, `--generations` and `--eval-games` are flags,
+and the script reuses cached self-play data in `data/leaves/work/`.
+Outputs:
+
+* `data/leaves/enable_leaves_default.csv` (committed, 0.3 MB): every leave
+  of up to 4 tiles, plus the linear model as `@` rows that
+  `LeaveEvaluator` uses for longer leaves.
+* `data/leaves/enable_leaves.csv` (12 MB, gitignored): every leave of 1-6
+  tiles.
+
+Use either with `--leaves-a FILE`. Python tests:
+`python3 -m unittest discover -s tools/leaves`.
+
+Arena results, 10,000 games each (seed 1999, 95% CIs):
+
+| A vs B | A win rate | A spread |
+|--------|-----------:|---------:|
+| gen 1 vs heuristic | 52.0% ± 1.0 | +4.1 ± 1.9 |
+| gen 2 vs gen 1 | 49.9% ± 1.0 | −1.3 ± 1.9 |
+| final (gen 2) vs heuristic | 51.6% ± 1.0 | +3.5 ± 1.9 |
+| final vs zero | 63.6% ± 0.9 | +33.9 ± 1.9 |
+| heuristic vs zero | 62.7% ± 0.9 | +30.3 ± 1.9 |
+| default (≤4 tiles + model) vs final | 50.2% ± 1.0 | −1.1 ± 1.9 |
+
+The second generation gives no further gain, so training stops there. The
+learned values beat the heuristic by about 4 points a game. Single tiles
+come out as blank +29.5, S +8.4, X +3.4, Z +3.0, E +0.8, …, U −5.3, V −7.2
+and Q −14.8. That order matches published tables, but the blank and Q are
+more extreme than the commonly cited +25 and −7: these values are tuned to
+this greedy static bot. `python3 tools/leaves/report.py TABLE` prints the
+best and worst leaves of a table.
+
 ## Endgame solver
 
 Once the bag is empty the opponent's rack is exactly the unseen tiles, so
@@ -174,7 +234,7 @@ Intervals are 95%. Time per game is thread-seconds.
 | 3 | Scoring + cross-checks | ✅ |
 | 4 | Move generation | ✅ |
 | 5 | Self-play arena | ✅ |
-| 6 | Learned rack-leave values | |
+| 6 | Learned rack-leave values | ✅ |
 | 7 | Monte Carlo simulation | |
 | 8 | Endgame solver | ✅ |
 | 9 | Web UI + server | |

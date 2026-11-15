@@ -127,6 +127,62 @@ TEST(LeaveEvaluatorTest, ParseRejectsMalformedTables) {
   }
 }
 
+TEST(LeaveEvaluatorTest, ModelValuesUnlistedLeaves) {
+  const LeaveEvaluator table = ParseTable(
+      "leave,value\n"
+      "S,8\n"
+      "@S1,5\n"
+      "@E1,1\n"
+      "@E2,-1.5\n"
+      "@Q1,-3\n"
+      "@len1,0.5\n"
+      "@len2,-1\n"
+      "@len3,-2\n"
+      "@v1c0,0.25\n"
+      "@v1c1,2\n"
+      "@v2c1,4\n"
+      "@qnou,-7\n");
+  EXPECT_TRUE(table.has_model());
+  EXPECT_EQ(table.size(), 1u);
+  // Listed leaves come from the table, not the model.
+  EXPECT_EQ(Value(table, "S"), 8.0);
+  // Unlisted: tile terms + length term + balance term (+ Q without U).
+  EXPECT_DOUBLE_EQ(Value(table, "E"), 1 + 0.5 + 0.25);
+  EXPECT_DOUBLE_EQ(Value(table, "SE"), 5 + 1 - 1 + 2);
+  EXPECT_DOUBLE_EQ(Value(table, "EES"), -1.5 + 5 - 2 + 4);
+  EXPECT_DOUBLE_EQ(Value(table, "Q"), -3 + 0.5 - 7);
+  EXPECT_DOUBLE_EQ(Value(table, "QU"), -3 - 1 + 2);
+  // Absent terms are zero; blanks have no balance term.
+  EXPECT_DOUBLE_EQ(Value(table, "?"), 0.5);
+  EXPECT_DOUBLE_EQ(Value(table, "WY"), -1.0);  // only @len2 applies
+  // The model covers 1-6 tiles only; empty and seven-tile leaves are 0.
+  EXPECT_EQ(Value(table, ""), 0.0);
+  EXPECT_EQ(Value(table, "EEEEEES"), 0.0);
+}
+
+TEST(LeaveEvaluatorTest, TableWithoutModelRowsHasNoModel) {
+  const LeaveEvaluator table = ParseTable("S,8\n");
+  EXPECT_FALSE(table.has_model());
+  EXPECT_EQ(Value(table, "E"), 0.0);
+  const LeaveEvaluator model_only = ParseTable("@E1,2\n");
+  EXPECT_TRUE(model_only.has_model());
+  EXPECT_EQ(model_only.size(), 0u);
+  EXPECT_EQ(Value(model_only, "E"), 2.0);
+}
+
+TEST(LeaveEvaluatorTest, ParseRejectsMalformedModelTerms) {
+  for (const char* row : {"@E0,1", "@E7,1", "@1E,1", "@len0,1", "@len7,1",
+                          "@v0c0,1", "@v4c3,1", "@vxc1,1", "@qu,1", "@,1",
+                          "@E1,x"}) {
+    EXPECT_THROW(ParseTable(std::string(row) + "\n"), std::runtime_error)
+        << row;
+  }
+  EXPECT_THROW(ParseTable("@E1,1\n@e1,2\n"), std::runtime_error);
+  EXPECT_THROW(ParseTable("@len2,1\n@len2,1\n"), std::runtime_error);
+  EXPECT_THROW(ParseTable("@v1c2,1\n@V1C2,1\n"), std::runtime_error);
+  EXPECT_THROW(ParseTable("@qnou,1\n@qnou,1\n"), std::runtime_error);
+}
+
 TEST(LeaveEvaluatorTest, LoadReadsFile) {
   const std::filesystem::path path =
       std::filesystem::path(::testing::TempDir()) / "leaves_test.csv";

@@ -33,6 +33,9 @@ constexpr double kDuplicatePenalty = 3.0;
 // neither since it can be either.
 constexpr double kBalancePenalty = 2.0;
 
+constexpr Letter kQ = 16;
+constexpr Letter kU = 20;
+
 constexpr bool IsVowel(Letter letter) {
   return letter == 0 || letter == 4 || letter == 8 || letter == 14 ||
          letter == 20;  // A E I O U
@@ -84,6 +87,8 @@ LeaveEvaluator LeaveEvaluator::Parse(std::istream& in,
     int line;
   };
   std::vector<Entry> entries;
+  LeaveEvaluator evaluator;
+  std::vector<bool> model_seen;
   std::string line;
   int line_number = 0;
   const auto fail = [&](const std::string& why) {
@@ -101,6 +106,14 @@ LeaveEvaluator LeaveEvaluator::Parse(std::istream& in,
     if (entries.empty() && leave_text == "leave" && value_text == "value") {
       continue;  // header
     }
+    if (!leave_text.empty() && leave_text.front() == '@') {
+      const std::optional<double> value = ParseDouble(value_text);
+      if (!value) fail("bad value '" + std::string(value_text) + "'");
+      const std::string error =
+          evaluator.AddModelTerm(leave_text, *value, model_seen);
+      if (!error.empty()) fail(error);
+      continue;
+    }
     const std::optional<Rack> leave = Rack::FromString(leave_text);
     if (!leave || leave->IsEmpty()) fail("bad leave '" +
                                          std::string(leave_text) + "'");
@@ -110,7 +123,6 @@ LeaveEvaluator LeaveEvaluator::Parse(std::istream& in,
   }
   if (in.bad()) fail("read error");
 
-  LeaveEvaluator evaluator;
   evaluator.kind_ = Kind::kTable;
   evaluator.name_ = "table:" + std::string(source);
   // At most half full; std::bit_ceil keeps the capacity a power of two so
@@ -178,8 +190,81 @@ double LeaveEvaluator::TableValue(const Rack& leave) const {
   for (std::size_t slot = (key * 0x9E3779B97F4A7C15ULL) >> shift_;;
        slot = (slot + 1) & mask) {
     if (keys_[slot] == key) return values_[slot];
-    if (keys_[slot] == 0) return 0.0;
+    if (keys_[slot] == 0) break;
   }
+  if (!has_model_ || leave.Size() > kMaxModelLeave) return 0.0;
+  return ModelValue(leave);
+}
+
+double LeaveEvaluator::ModelValue(const Rack& leave) const {
+  double value = 0.0;
+  int vowels = 0;
+  int consonants = 0;
+  for (Letter letter = 0; letter < kAlphabetSize; ++letter) {
+    const int count = leave.Count(letter);
+    value += tile_terms_[letter][static_cast<std::size_t>(count)];
+    if (count == 0 || letter == kBlank) continue;
+    (IsVowel(letter) ? vowels : consonants) += count;
+  }
+  value += length_terms_[static_cast<std::size_t>(leave.Size())];
+  value += balance_terms_[static_cast<std::size_t>(vowels)]
+                         [static_cast<std::size_t>(consonants)];
+  if (leave.Contains(kQ) && !leave.Contains(kU)) value += q_without_u_;
+  return value;
+}
+
+std::string LeaveEvaluator::AddModelTerm(std::string_view name, double value,
+                                         std::vector<bool>& seen) {
+  // Each term gets a slot in `seen` so a repeated term is caught: tile
+  // terms first, then length, balance and Q-without-U terms.
+  constexpr std::size_t kTileSlots = kAlphabetSize * kRackSize;
+  constexpr std::size_t kLengthSlots = kRackSize;
+  constexpr std::size_t kBalanceSlots = kRackSize * kRackSize;
+  seen.resize(kTileSlots + kLengthSlots + kBalanceSlots + 1);
+  const auto digit = [](char c) { return c >= '0' && c <= '9'; };
+  double* term = nullptr;
+  std::size_t slot = 0;
+  if (name == "@qnou") {
+    term = &q_without_u_;
+    slot = kTileSlots + kLengthSlots + kBalanceSlots;
+  } else if (name.size() == 5 && name.substr(1, 3) == "len" &&
+             digit(name[4])) {
+    const int size = name[4] - '0';
+    if (size < 1 || size > kMaxModelLeave) {
+      return "bad length term '" + std::string(name) + "'";
+    }
+    const auto n = static_cast<std::size_t>(size);
+    term = &length_terms_[n];
+    slot = kTileSlots + n;
+  } else if (name.size() == 5 && (name[1] == 'v' || name[1] == 'V') &&
+             digit(name[2]) && (name[3] == 'c' || name[3] == 'C') &&
+             digit(name[4])) {
+    const int vowels = name[2] - '0';
+    const int consonants = name[4] - '0';
+    if (vowels + consonants < 1 || vowels + consonants > kMaxModelLeave) {
+      return "bad balance term '" + std::string(name) + "'";
+    }
+    const auto v = static_cast<std::size_t>(vowels);
+    const auto c = static_cast<std::size_t>(consonants);
+    term = &balance_terms_[v][c];
+    slot = kTileSlots + kLengthSlots + v * kRackSize + c;
+  } else if (name.size() == 3 && digit(name[2])) {
+    const std::optional<Letter> letter = CharToLetter(name[1]);
+    const int count = name[2] - '0';
+    if (!letter || count < 1 || count > kMaxModelLeave) {
+      return "bad tile term '" + std::string(name) + "'";
+    }
+    const auto k = static_cast<std::size_t>(count);
+    term = &tile_terms_[*letter][k];
+    slot = std::size_t{*letter} * kRackSize + k;
+  } else {
+    return "unknown model term '" + std::string(name) + "'";
+  }
+  if (seen[slot]) return "duplicate model term '" + std::string(name) + "'";
+  seen[slot] = true;
+  *term = value;
+  has_model_ = true;
+  return {};
 }
 
 void LeaveEvaluator::Insert(std::uint64_t key, double value) {

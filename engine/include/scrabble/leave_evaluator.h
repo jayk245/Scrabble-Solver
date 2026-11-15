@@ -7,10 +7,12 @@
 //   * Zero: every leave is worth 0, i.e. pure score maximisation. Used as
 //     the control in A/B tests.
 //   * Heuristic: a small hand-set model (per-tile values, duplicate and
-//     vowel/consonant balance penalties). It is a placeholder that M6
-//     replaces with values learned from self-play logs.
-//   * Table: values loaded from a file, keyed by canonical leave. This is
-//     the hook M6 plugs learned values into.
+//     vowel/consonant balance penalties). Superseded by learned tables,
+//     and kept as the baseline they are measured against.
+//   * Table: values loaded from a file, keyed by canonical leave, with an
+//     optional linear fallback model for leaves the file does not list.
+//     Learned tables (data/leaves/, trained by tools/leaves/train.py) use
+//     this.
 //
 // Leave table file format (CSV, UTF-8 / ASCII):
 //
@@ -19,15 +21,34 @@
 //   ?,25.6
 //   ES,4.1
 //   QU,-5.2
+//   @S1,7.9              <- fallback model terms (optional, see below)
+//   @len2,-3.0
+//   @v1c1,0.4
+//   @qnou,-6.1
 //
 // The leave is 1-7 tiles, A-Z (either case) and '?' for a blank, in any
 // order; it is canonicalised on load, so "SE" and "ES" are the same key and
-// may not both appear. Leaves absent from the table are worth 0, as is the
-// empty leave (going out or exchanging everything).
+// may not both appear.
+//
+// Rows whose key starts with '@' are terms of the fallback model:
+//   @<tile><k>   holding exactly k (1-6) copies of <tile> (A-Z or '?')
+//   @len<n>      the leave has n (1-6) tiles
+//   @v<v>c<c>    holding v vowels (AEIOU) and c consonants (Y included;
+//                blanks count as neither), 1 <= v + c <= 6
+//   @qnou        holding a Q without a U
+// A leave of 1-6 tiles that is not listed is worth the sum of its active
+// terms (absent terms are 0). This lets a compact table list only short
+// leaves and still value every leave, at the accuracy of the linear model
+// the table was trained with. If the file has no '@' rows, unlisted leaves
+// are worth 0. Seven-tile leaves (passing) are never extrapolated: keeping
+// the whole rack is a different decision from keeping part of it, and the
+// training data has no passes to learn from. The empty leave (going out or
+// exchanging everything) is always worth 0.
 
 #ifndef SCRABBLE_LEAVE_EVALUATOR_H_
 #define SCRABBLE_LEAVE_EVALUATOR_H_
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -54,7 +75,7 @@ class LeaveEvaluator {
 
   // Reads a leave table (format in the file comment). Throws
   // std::runtime_error naming the file and line on unreadable files,
-  // malformed lines or duplicate leaves.
+  // malformed lines or duplicate leaves or model terms.
   static LeaveEvaluator Load(const std::filesystem::path& path);
 
   // As Load(), from an open stream; `source` names it in error messages.
@@ -66,8 +87,12 @@ class LeaveEvaluator {
 
   Kind kind() const { return kind_; }
 
-  // Number of table entries (0 unless kind() == kTable).
+  // Number of table entries (0 unless kind() == kTable), not counting
+  // model terms.
   std::size_t size() const { return size_; }
+
+  // True if the table has fallback model terms ('@' rows).
+  bool has_model() const { return has_model_; }
 
   // Short label for reports: "zero", "heuristic" or "table:<path>".
   const std::string& name() const { return name_; }
@@ -81,7 +106,12 @@ class LeaveEvaluator {
 
   double HeuristicValue(const Rack& leave) const;
   double TableValue(const Rack& leave) const;
+  double ModelValue(const Rack& leave) const;
   void Insert(std::uint64_t key, double value);
+  // Parses one '@' row into the model arrays. Returns an error message, or
+  // an empty string on success.
+  std::string AddModelTerm(std::string_view name, double value,
+                           std::vector<bool>& seen);
 
   Kind kind_ = Kind::kZero;
   std::string name_ = "zero";
@@ -92,6 +122,18 @@ class LeaveEvaluator {
   std::vector<double> values_;
   std::size_t size_ = 0;
   int shift_ = 64;  // 64 - log2(capacity), for Fibonacci hashing
+
+  // Fallback model (see the file comment). Fixed-size arrays so the
+  // evaluation is a few dozen loads and adds, with no allocation.
+  static constexpr int kMaxModelLeave = kRackSize - 1;
+  bool has_model_ = false;
+  // tile_terms_[letter][k]: holding exactly k copies; [letter][0] is 0.
+  std::array<std::array<double, kRackSize>, kAlphabetSize> tile_terms_{};
+  // length_terms_[size]; [0] is 0.
+  std::array<double, kRackSize> length_terms_{};
+  // balance_terms_[vowels][consonants]; [0][0] (blanks only) is 0.
+  std::array<std::array<double, kRackSize>, kRackSize> balance_terms_{};
+  double q_without_u_ = 0.0;
 };
 
 }  // namespace scrabble

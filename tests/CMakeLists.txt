@@ -29,11 +29,14 @@ add_executable(scrabble_tests
   bot_test.cc
   endgame_test.cc
   arena_test.cc
+  learned_leaves_test.cc
   test_util.cc)
 target_link_libraries(scrabble_tests PRIVATE scrabble::engine GTest::gtest_main)
-# Integration tests read fetched word lists from the source tree.
+# Integration tests read fetched word lists and learned leave tables from
+# the source tree.
 target_compile_definitions(scrabble_tests PRIVATE
-  SCRABBLE_LEXICA_DIR="${PROJECT_SOURCE_DIR}/data/lexica")
+  SCRABBLE_LEXICA_DIR="${PROJECT_SOURCE_DIR}/data/lexica"
+  SCRABBLE_LEAVES_DIR="${PROJECT_SOURCE_DIR}/data/leaves")
 
 include(GoogleTest)
 gtest_discover_tests(scrabble_tests)

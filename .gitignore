@@ -12,3 +12,7 @@ compile_commands.json
 # Dictionaries are fetched separately (licensing varies by lexicon).
 /data/lexica/*.txt
 /data/lexica/*.gaddag
+
+# Web UI dependencies and production build
+/web/node_modules/
+/web/dist/

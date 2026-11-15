@@ -1,0 +1,56 @@
+import { normaliseRack, RACK_SIZE } from '../lib/rack';
+
+export interface RackInputProps {
+  rack: string;
+  tileValues: Record<string, number>;
+  onChange: (rack: string) => void;
+  /** Draws a random rack from the tiles not on the board. */
+  onRandom: () => void;
+}
+
+/** Text entry for the rack, with the tiles drawn underneath. */
+export function RackInput({ rack, tileValues, onChange, onRandom }: RackInputProps) {
+  const slots = Array.from({ length: RACK_SIZE }, (_, i) => rack[i] ?? null);
+  return (
+    <section className="panel" aria-labelledby="rack-heading">
+      <div className="panel-header">
+        <h2 id="rack-heading">Rack</h2>
+        <div className="button-row">
+          <button type="button" className="button-ghost" onClick={onRandom}>
+            Random
+          </button>
+          <button
+            type="button"
+            className="button-ghost"
+            onClick={() => onChange('')}
+            disabled={rack.length === 0}
+          >
+            Clear
+          </button>
+        </div>
+      </div>
+      <input
+        className="text-input rack-text"
+        value={rack}
+        onChange={(event) => onChange(normaliseRack(event.target.value))}
+        placeholder="e.g. RETAINS or AEINST?"
+        aria-label="Rack tiles"
+        spellCheck={false}
+        autoComplete="off"
+      />
+      <div className="rack-tiles" aria-hidden="true">
+        {slots.map((tile, i) =>
+          tile ? (
+            <span key={i} className={`rack-tile${tile === '?' ? ' is-blank' : ''}`}>
+              <span className="tile-letter">{tile === '?' ? '' : tile}</span>
+              {tile !== '?' && <span className="tile-value">{tileValues[tile]}</span>}
+            </span>
+          ) : (
+            <span key={i} className="rack-tile is-empty" />
+          ),
+        )}
+      </div>
+      <p className="hint">Letters, or ? for a blank. Moves update as you type.</p>
+    </section>
+  );
+}

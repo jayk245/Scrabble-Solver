@@ -16,3 +16,9 @@ compile_commands.json
 # Web UI dependencies and production build
 /web/node_modules/
 /web/dist/
+
+# Leave training: the full learned table (~12 MB, regenerate with
+# tools/leaves/train.py), per-generation work files and Python caches.
+/data/leaves/enable_leaves.csv
+/data/leaves/work/
+__pycache__/

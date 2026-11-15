@@ -100,6 +100,70 @@ never on `--threads`. Leaves are `heuristic` (default), `zero` or a
 `--gcg-dir DIR` writes every game as GCG, and `--log FILE` writes a JSONL
 move log (schema in `engine/include/scrabble/arena.h`) for leave training.
 
+## Endgame solver
+
+Once the bag is empty the opponent's rack is exactly the unseen tiles, so
+the rest of the game is a two-player, zero-sum game of perfect information.
+`EndgameSolver` (`engine/include/scrabble/endgame.h`) searches it exactly:
+
+- Negamax with fail-soft alpha-beta and principal-variation search, plus
+  iterative deepening that puts the previous iteration's best move first.
+- Move ordering: the table move first, then going-out moves, then
+  placements by score plus the face value they unload, then the pass.
+- Transposition table: Zobrist keys over board squares, both racks, side
+  to move and the scoreless-turn counter. Two-entry buckets (one
+  depth-preferred, one always-replace) with exact/lower/upper bound flags.
+  A generation counter invalidates the table in O(1) per solve, so results
+  never depend on earlier solves.
+- Make/unmake goes through `Position::Apply`/`Undo` with per-ply move
+  buffers, so there is no Position copy or heap allocation per node.
+- The rules match `Game` exactly. Going out swings the spread by twice the
+  opponent's rack (under both NASPA and WESPA). Every scoreless turn, a pass
+  or a zero-point play, counts toward the six that end the game, and each
+  player then loses their own rack. Exchanges are never generated.
+- Each node also reports whether a horizon guess touched its value. A solve
+  is complete (exact) when the root's value is untouched. Otherwise the
+  node or time limit returns the best move from the deepest completed
+  depth.
+
+Enable it in the bot with `BotConfig::endgame` (`enabled`, `node_limit`,
+`time_limit_ms`, `tt_size_mb`), or in the arena with `--endgame-a` /
+`--endgame-b`, `--endgame-nodes N` (default 2,000,000) and
+`--endgame-ms T`. Use the node limit when results must be reproducible.
+
+```sh
+./build/release/apps/scrabble_endgame_bench --positions 100 --ms 5000 --nodes 0
+```
+
+This solves positions taken at the moment the bag empties in seeded
+self-play. `--max-tiles K` truncates both racks to study scaling. Results
+are from one thread on an Apple Silicon laptop, 5 s per position, 64 MB
+table:
+
+| Racks (mover v opp) | Solved exactly | Median | p90 | p99 | Max | Median nodes | Nodes/s | TT hits |
+|---|---|---|---|---|---|---|---|---|
+| 2 v 2     | 100% | 0.2 ms | 1.1 ms | 3.1 ms | 3.5 ms | 122 | 1.7M | 65% |
+| 3 v 3     | 100% | 1.1 ms | 15 ms | 29 ms | 46 ms | 852 | 1.6M | 79% |
+| 4 v 3.8   | 100% | 8.1 ms | 140 ms | 561 ms | 1.0 s | 4.1K | 1.9M | 85% |
+| 5 v 4.6   | 93%  | 59 ms | 851 ms | 5 s | 5 s | 48K | 1.6M | 80% |
+| 7 v 5.5 (as dealt) | 66% | 1.0 s | 5 s | 5 s | 5 s | 1.0M | 1.3M | 57% |
+
+Full-rack endgames are hard. With 13-14 tiles across both racks only half
+solve within 5 s; the unsolved ones reach depth 7 (3-11). Next steps: a
+better horizon estimate (score plus the opponent's best out-play), a
+"stuck tiles" analysis that prunes tiles that can never be played, and
+caching per-rack move lists across passes.
+
+Strength check: 5,000 arena games (seed 1, NASPA) of the same heuristic
+bot, endgame on (A, 200,000 nodes per move) against endgame off (B):
+
+| | Win rate (A) | Spread (A−B) | Time per game |
+|---|---|---|---|
+| Endgame on vs off | 52.3% ± 1.4% | +5.4 ± 2.6 | 316 ms |
+| Control: off vs off | 49.7% ± 1.4% | −0.1 ± 2.6 | 8 ms |
+
+Intervals are 95%. Time per game is thread-seconds.
+
 ## Roadmap
 
 | # | Milestone | Status |
@@ -112,6 +176,6 @@ move log (schema in `engine/include/scrabble/arena.h`) for leave training.
 | 5 | Self-play arena | ✅ |
 | 6 | Learned rack-leave values | |
 | 7 | Monte Carlo simulation | |
-| 8 | Endgame solver | |
+| 8 | Endgame solver | ✅ |
 | 9 | Web UI + server | |
 | 10 | Benchmarks against external engines | |

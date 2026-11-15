@@ -1,10 +1,15 @@
 add_library(scrabble_engine
   src/bag.cc
   src/board.cc
+  src/cross_checks.cc
   src/gaddag.cc
   src/lexicon.cc
   src/move.cc
-  src/rack.cc)
+  src/move_generator.cc
+  src/move_validation.cc
+  src/position.cc
+  src/rack.cc
+  src/scoring.cc)
 add_library(scrabble::engine ALIAS scrabble_engine)
 
 target_include_directories(scrabble_engine PUBLIC

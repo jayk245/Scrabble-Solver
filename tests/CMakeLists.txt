@@ -18,7 +18,12 @@ add_executable(scrabble_tests
   move_test.cc
   letter_set_test.cc
   gaddag_test.cc
-  lexicon_test.cc)
+  lexicon_test.cc
+  cross_checks_test.cc
+  scoring_test.cc
+  move_validation_test.cc
+  move_generator_test.cc
+  test_util.cc)
 target_link_libraries(scrabble_tests PRIVATE scrabble::engine GTest::gtest_main)
 # Integration tests read fetched word lists from the source tree.
 target_compile_definitions(scrabble_tests PRIVATE

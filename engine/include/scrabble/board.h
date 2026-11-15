@@ -108,6 +108,8 @@ struct Square {
   bool is_blank = false;
 
   constexpr bool IsEmpty() const { return letter == kEmpty; }
+
+  bool operator==(const Square&) const = default;
 };
 
 class Board {
@@ -132,6 +134,8 @@ class Board {
   // Occupied squares show the letter (lowercase for blanks); empty squares
   // show their premium: = TW, - DW, " TL, ' DL, * centre, . plain.
   std::string ToString() const;
+
+  bool operator==(const Board&) const = default;
 
  private:
   std::array<Square, kNumSquares> squares_{};

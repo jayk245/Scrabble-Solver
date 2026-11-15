@@ -105,6 +105,18 @@ class Gaddag {
   // false rather than an error so callers can pass raw user text.
   bool Contains(std::string_view word) const;
 
+  // As Contains(), for a word already encoded as Letters (each < kNumLetters).
+  // Allocation-free; used by move validation on board-extracted words.
+  bool ContainsLetters(std::span<const Letter> word) const {
+    if (word.empty()) return false;
+    Node node = Root();
+    for (auto it = word.rbegin(); it != word.rend(); ++it) {
+      node = Child(node, *it);
+      if (node == kInvalidNode) return false;
+    }
+    return IsTerminal(node);
+  }
+
   // Number of distinct words the graph was built from.
   std::size_t WordCount() const { return word_count_; }
   // Number of distinct nodes after minimization.

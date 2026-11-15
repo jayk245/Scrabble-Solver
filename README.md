@@ -48,6 +48,32 @@ counts, memory size and build/load times. Words are uppercased and filtered
 to 2-15 letters A-Z (168,551 of ENABLE's 172,823 entries). The ENABLE
 integration tests are skipped if the list has not been fetched.
 
+## Web UI
+
+An analysis board in the browser: set up a position, enter a rack, and
+browse every legal move ranked by score with board previews. The C++ server
+(`apps/server`, cpp-httplib + nlohmann/json) loads the GADDAG once and
+answers stateless JSON requests; the frontend (`web/`) is React +
+TypeScript built with Vite. Requires Node.js 20.19+ or 22.12+.
+
+Production (one process; the server also serves `web/dist`):
+
+```sh
+(cd web && npm ci && npm run build)
+./build/release/apps/server/scrabble_server   # http://127.0.0.1:8080
+```
+
+Development (hot reload; Vite proxies `/api` to the server):
+
+```sh
+./build/release/apps/server/scrabble_server   # terminal 1
+(cd web && npm run dev)                       # terminal 2: http://localhost:5173
+```
+
+Server flags: `--port` (8080), `--host` (127.0.0.1), `--lexicon PATH`,
+`--static-dir DIR`. Endpoints are documented in `apps/server/api.h`, and
+the JSON schema in `web/src/api/types.ts`.
+
 ## Move generation benchmark
 
 ```sh

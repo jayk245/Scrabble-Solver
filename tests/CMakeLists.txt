@@ -36,3 +36,4 @@ target_compile_definitions(scrabble_tests PRIVATE
 
 include(GoogleTest)
 gtest_discover_tests(scrabble_tests)
+add_subdirectory(server)

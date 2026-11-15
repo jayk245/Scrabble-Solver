@@ -14,3 +14,5 @@ add_executable(scrabble_arena arena/main.cc)
 target_link_libraries(scrabble_arena PRIVATE scrabble::engine)
 target_compile_definitions(scrabble_arena PRIVATE
   SCRABBLE_LEXICA_DIR="${PROJECT_SOURCE_DIR}/data/lexica")
+
+add_subdirectory(server)

@@ -48,6 +48,17 @@ counts, memory size and build/load times. Words are uppercased and filtered
 to 2-15 letters A-Z (168,551 of ENABLE's 172,823 entries). The ENABLE
 integration tests are skipped if the list has not been fetched.
 
+## Move generation benchmark
+
+```sh
+./build/release/apps/scrabble_movegen_bench --games 1000 --seed 1
+```
+
+Plays seeded games between uniformly random movers (a benchmark driver,
+not a bot) and reports positions/sec, moves generated/sec and average moves
+per position. `--lexicon PATH` selects a word list (default ENABLE). The
+printed checksum must stay fixed for a given seed across optimisations.
+
 ## Roadmap
 
 | # | Milestone | Status |
@@ -55,9 +66,9 @@ integration tests are skipped if the list has not been fetched.
 | 0 | Build system, tests, board/tile basics | ✅ |
 | 1 | Bag, rack, move representation | ✅ |
 | 2 | Lexicon + GADDAG | ✅ |
-| 3 | Scoring + cross-checks | |
-| 4 | Move generation | |
-| 5 | Greedy bot + self-play arena | |
+| 3 | Scoring + cross-checks | ✅ |
+| 4 | Move generation | ✅ |
+| 5 | Self-play arena | |
 | 6 | Learned rack-leave values | |
 | 7 | Monte Carlo simulation | |
 | 8 | Endgame solver | |

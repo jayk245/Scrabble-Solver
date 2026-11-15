@@ -32,7 +32,7 @@ UndefinedBehaviorSanitizer.
 | # | Milestone | Status |
 |---|-----------|--------|
 | 0 | Build system, tests, board/tile basics | ✅ |
-| 1 | Bag, rack, move representation | |
+| 1 | Bag, rack, move representation | ✅ |
 | 2 | Lexicon + GADDAG | |
 | 3 | Scoring + cross-checks | |
 | 4 | Move generation | |

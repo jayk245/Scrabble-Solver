@@ -11,7 +11,11 @@ FetchContent_MakeAvailable(googletest)
 
 add_executable(scrabble_tests
   tile_test.cc
-  board_test.cc)
+  board_test.cc
+  rng_test.cc
+  rack_test.cc
+  bag_test.cc
+  move_test.cc)
 target_link_libraries(scrabble_tests PRIVATE scrabble::engine GTest::gtest_main)
 
 include(GoogleTest)

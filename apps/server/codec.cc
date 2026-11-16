@@ -135,6 +135,20 @@ Move MoveFromNotation(std::string_view notation) {
   return *move;
 }
 
+Rack RackForMove(const Move& move) {
+  Rack rack;
+  for (int i = 0; i < move.num_tiles; ++i) {
+    const MoveTile tile = move.tiles[static_cast<std::size_t>(i)];
+    if (move.type == MoveType::kPlace) {
+      if (tile.is_play_through()) continue;
+      rack.Add(tile.is_blank() ? kBlank : tile.letter());
+    } else {
+      rack.Add(tile.letter());
+    }
+  }
+  return rack;
+}
+
 std::string_view MoveErrorCode(MoveError error) {
   switch (error) {
     case MoveError::kOk: return "ok";

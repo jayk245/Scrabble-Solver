@@ -4,6 +4,7 @@
 #include <chrono>
 #include <cstddef>
 #include <exception>
+#include <functional>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -27,15 +28,7 @@ ApiResponse Error(int status, std::string_view code, std::string_view message) {
   return {status, Json{{"error", code}, {"message", message}}};
 }
 
-Json ParseObject(std::string_view body) {
-  // Exceptions are disabled for the parse so malformed input takes the same
-  // error path as every other client mistake.
-  Json value = Json::parse(body, /*cb=*/nullptr, /*allow_exceptions=*/false);
-  if (value.is_discarded() || !value.is_object()) {
-    throw ApiError(400, "bad_json", "request body must be a JSON object");
-  }
-  return value;
-}
+Json ParseObject(std::string_view body) { return ParseRequestObject(body); }
 
 // An absent board means the empty board, which keeps ad-hoc requests short.
 Board BoardField(const Json& request) {
@@ -64,23 +57,6 @@ Move MoveField(const Json& request) {
   return MoveFromNotation(it->get_ref<const std::string&>());
 }
 
-// Exactly the tiles a move takes from a rack. Used when the client sends no
-// rack (e.g. replaying a pasted game whose racks are unknown) so validation
-// still checks geometry and words but not tile ownership.
-Rack RackForMove(const Move& move) {
-  Rack rack;
-  for (int i = 0; i < move.num_tiles; ++i) {
-    const MoveTile tile = move.tiles[static_cast<std::size_t>(i)];
-    if (move.type == MoveType::kPlace) {
-      if (tile.is_play_through()) continue;
-      rack.Add(tile.is_blank() ? kBlank : tile.letter());
-    } else {
-      rack.Add(tile.letter());
-    }
-  }
-  return rack;
-}
-
 std::size_t LimitField(const Json& request) {
   const auto it = request.find("limit");
   if (it == request.end() || it->is_null()) return kDefaultMoveLimit;
@@ -90,10 +66,29 @@ std::size_t LimitField(const Json& request) {
   return std::min(it->get<std::size_t>(), kMaxMoveLimit);
 }
 
-// Runs a handler, converting client errors into 4xx responses. Anything
-// else is a server bug and becomes a 500 rather than killing the process.
 template <typename Handler>
 ApiResponse Guard(Handler&& handler) {
+  return GuardedResponse(std::forward<Handler>(handler));
+}
+
+}  // namespace
+
+Json ParseRequestObject(std::string_view body) {
+  // Exceptions are disabled for the parse so malformed input takes the same
+  // error path as every other client mistake.
+  Json value = Json::parse(body, /*cb=*/nullptr, /*allow_exceptions=*/false);
+  if (value.is_discarded() || !value.is_object()) {
+    throw ApiError(400, "bad_json", "request body must be a JSON object");
+  }
+  return value;
+}
+
+ApiResponse ErrorResponse(int status, std::string_view code,
+                          std::string_view message) {
+  return Error(status, code, message);
+}
+
+ApiResponse GuardedResponse(const std::function<ApiResponse()>& handler) {
   try {
     return handler();
   } catch (const ApiError& e) {
@@ -105,8 +100,6 @@ ApiResponse Guard(Handler&& handler) {
     return Error(500, "internal_error", e.what());
   }
 }
-
-}  // namespace
 
 ApiResponse Api::Health() const {
   return {200, Json{{"status", "ok"},
@@ -201,11 +194,6 @@ ApiResponse Api::Play(std::string_view body) const {
     response["position"] = PositionSummaryToJson(board, leave);
     return ApiResponse{200, std::move(response)};
   });
-}
-
-ApiResponse Api::NotImplemented(std::string_view what) {
-  return Error(501, "not_implemented",
-               std::string(what) + " is planned but not implemented yet");
 }
 
 ApiResponse Api::NotFound(std::string_view path) {

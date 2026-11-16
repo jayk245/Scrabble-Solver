@@ -4,13 +4,13 @@
 // body, so the whole API can be unit tested without sockets; http_server.cc
 // only maps routes onto these calls.
 //
-// Endpoints are stateless: the client sends the full board (and rack) with
-// every request and keeps history itself. The only shared state is the
-// immutable lexicon, so handlers are safe to run concurrently on the
-// server's worker threads without locking; each call builds its own
+// The analysis endpoints are stateless: the client sends the full board
+// (and rack) with every request and keeps history itself. The only shared
+// state is the immutable lexicon, so handlers are safe to run concurrently
+// on the server's worker threads without locking; each call builds its own
 // Position and MoveGenerator, which costs microseconds next to generation.
 //
-// Implemented (see web/src/api/types.ts for the full schema):
+// Analysis (this class; see web/src/api/types.ts for the full schema):
 //   GET  /api/health     liveness and lexicon info
 //   GET  /api/rules      premium layout, tile values and distribution
 //   POST /api/position   unseen-tile summary for a board and rack
@@ -18,19 +18,23 @@
 //   POST /api/validate   legality of one move in notation, with its score
 //   POST /api/play       apply a legal move and return the new board
 //
-// Planned for the self-play milestone (not implemented; the server answers
-// 501 so clients can detect it):
-//   POST /api/games              start a bot-vs-bot game or a GCG replay;
-//                                returns {"id": ...}
-//   GET  /api/games/{id}/events  Server-Sent Events stream of the game:
-//                                "start", then one "move" per turn, then
-//                                "end"; reconnecting clients resume with
-//                                Last-Event-ID = turn number.
+// Game viewer (GamesApi in games.h; the only stateful endpoints, backed by
+// the in-memory GameRegistry in game_registry.h):
+//   POST   /api/games              start a bot-vs-bot game or a GCG replay;
+//                                  201 {"id", "mode", "events"}
+//   GET    /api/games/{id}/events  Server-Sent Events stream: "start", one
+//                                  "move" per turn, then "end". The SSE id
+//                                  is the event's index, so a reconnecting
+//                                  EventSource resumes via Last-Event-ID.
+//   GET    /api/games/{id}         status summary
+//   GET    /api/games/{id}/gcg     the game record (text/plain)
+//   DELETE /api/games/{id}         cancel a running game
 
 #ifndef SCRABBLE_SERVER_API_H_
 #define SCRABBLE_SERVER_API_H_
 
 #include <cstddef>
+#include <functional>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -58,6 +62,19 @@ struct ServerInfo {
 inline constexpr std::size_t kDefaultMoveLimit = 1000;
 inline constexpr std::size_t kMaxMoveLimit = 100000;
 
+// Shared by the handler classes.
+//
+// Parses a request body that must be a JSON object; throws ApiError (400,
+// "bad_json") otherwise.
+nlohmann::json ParseRequestObject(std::string_view body);
+// {"error": code, "message": message} with `status`.
+ApiResponse ErrorResponse(int status, std::string_view code,
+                          std::string_view message);
+// Runs `handler`, turning ApiError into its status, JSON type errors into
+// 400 and any other exception into 500, so a bad request never takes the
+// server down.
+ApiResponse GuardedResponse(const std::function<ApiResponse()>& handler);
+
 class Api {
  public:
   // `gaddag` must outlive the Api.
@@ -74,8 +91,6 @@ class Api {
   ApiResponse Validate(std::string_view body) const;
   ApiResponse Play(std::string_view body) const;
 
-  // Response for reserved endpoints that are not implemented yet.
-  static ApiResponse NotImplemented(std::string_view what);
   static ApiResponse NotFound(std::string_view path);
 
  private:

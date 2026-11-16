@@ -37,13 +37,17 @@ target_include_directories(scrabble_third_party_json SYSTEM INTERFACE
 
 add_library(scrabble_server_lib
   api.cc
-  codec.cc)
+  codec.cc
+  game_registry.cc
+  games.cc)
 add_library(scrabble::server_lib ALIAS scrabble_server_lib)
 target_include_directories(scrabble_server_lib PUBLIC
   ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(scrabble_server_lib PUBLIC
   scrabble::engine
-  scrabble_third_party_json)
+  scrabble_third_party_json
+  # Self-play games run on their own threads (game_registry.h).
+  Threads::Threads)
 
 add_executable(scrabble_server
   http_server.cc

@@ -2,19 +2,27 @@
 
 #include <httplib.h>
 
+#include <charconv>
+#include <chrono>
 #include <cstddef>
 #include <cstdio>
 #include <exception>
 #include <filesystem>
+#include <memory>
 #include <string>
+#include <string_view>
 #include <system_error>
+#include <vector>
+
+#include "game_registry.h"
 
 namespace scrabble::server {
 namespace {
 
-// Requests carry at most a board, a rack and a move; anything larger is a
+// Requests carry at most a board, a rack and a move, or one GCG record
+// (a few kilobytes; games.cc caps it at 64 KiB); anything larger is a
 // mistake or abuse.
-constexpr std::size_t kMaxRequestBytes = 64 * 1024;
+constexpr std::size_t kMaxRequestBytes = 128 * 1024;
 
 constexpr const char* kJsonType = "application/json";
 
@@ -43,9 +51,87 @@ httplib::Server::Handler Post(const Api& api, Method method) {
   };
 }
 
+// How long one call of the stream's content provider waits for an event.
+// Bounded so the provider regularly returns to cpp-httplib, which is how a
+// closed connection is noticed.
+constexpr std::chrono::milliseconds kStreamPoll{1000};
+// A comment line is sent after this many empty polls, so proxies do not
+// time the idle stream out and a vanished client is detected by the
+// failing write.
+constexpr int kKeepAlivePolls = 15;
+
+// The index of the first event a client still needs: zero for a new
+// stream, or one past the Last-Event-ID an EventSource sends when it
+// reconnects.
+std::size_t ResumeIndex(const httplib::Request& req) {
+  const std::string last = req.get_header_value("Last-Event-ID");
+  if (last.empty()) return 0;
+  std::size_t index = 0;
+  const auto [end, error] =
+      std::from_chars(last.data(), last.data() + last.size(), index);
+  if (error != std::errc() || end != last.data() + last.size()) return 0;
+  return index + 1;
+}
+
+// Serves GET /api/games/{id}/events as text/event-stream.
+//
+// cpp-httplib calls the chunked content provider repeatedly on this
+// connection's worker thread until it calls sink.done() or returns false.
+// Each call waits at most kStreamPoll for new events, writes whatever has
+// arrived, and returns, so the thread is never parked indefinitely and the
+// game's producer is never blocked by a slow reader.
+void StreamEvents(GamesApi& games, const httplib::Request& req,
+                  httplib::Response& res) {
+  const std::string id = req.matches[1].str();
+  std::shared_ptr<GameSession> session = games.Find(id);
+  if (session == nullptr) {
+    Send(res, ErrorResponse(404, "unknown_game",
+                            "no game " + id + " (it may have expired)"));
+    return;
+  }
+  res.set_header("Cache-Control", "no-cache");
+  // Disables response buffering in nginx-style reverse proxies.
+  res.set_header("X-Accel-Buffering", "no");
+
+  struct Cursor {
+    std::size_t next = 0;
+    int idle_polls = 0;
+  };
+  auto cursor = std::make_shared<Cursor>();
+  cursor->next = ResumeIndex(req);
+  session->AddReader();
+  res.set_chunked_content_provider(
+      "text/event-stream",
+      [session, cursor](std::size_t /*offset*/, httplib::DataSink& sink) {
+        std::vector<std::string> frames;
+        switch (session->Read(cursor->next, kStreamPoll, frames)) {
+          case GameSession::ReadResult::kEnd:
+            sink.done();
+            return true;
+          case GameSession::ReadResult::kTimeout: {
+            if (++cursor->idle_polls < kKeepAlivePolls) {
+              return sink.is_writable();
+            }
+            cursor->idle_polls = 0;
+            static constexpr std::string_view kKeepAlive = ": keep-alive\n\n";
+            return sink.write(kKeepAlive.data(), kKeepAlive.size());
+          }
+          case GameSession::ReadResult::kData:
+            for (const std::string& frame : frames) {
+              if (!sink.write(frame.data(), frame.size())) return false;
+            }
+            cursor->next += frames.size();
+            cursor->idle_polls = 0;
+            return true;
+        }
+        return false;
+      },
+      [session](bool /*success*/) { session->RemoveReader(); });
+}
+
 }  // namespace
 
-bool Serve(const Api& api, const HttpOptions& options) {
+bool Serve(const Api& api, GamesApi& games, const HttpOptions& options) {
   httplib::Server server;
   server.set_payload_max_length(kMaxRequestBytes);
 
@@ -62,15 +148,38 @@ bool Serve(const Api& api, const HttpOptions& options) {
   server.Post("/api/validate", Post(api, &Api::Validate));
   server.Post("/api/play", Post(api, &Api::Play));
 
-  // Reserved for game streaming (see api.h); registered now so the routes
-  // and their status are discoverable.
+  // Game viewer (see games.h). These handlers only touch the registry and
+  // event logs; the engine runs on the registry's worker threads.
   server.Post("/api/games",
-              [](const httplib::Request&, httplib::Response& res) {
-                Send(res, Api::NotImplemented("starting games"));
+              [&games](const httplib::Request& req, httplib::Response& res) {
+                Send(res, games.Start(req.body));
               });
-  server.Get(R"(/api/games/([^/]+)/events)",
-             [](const httplib::Request&, httplib::Response& res) {
-               Send(res, Api::NotImplemented("game event streams"));
+  server.Get(R"(/api/games/([0-9a-f]+))",
+             [&games](const httplib::Request& req, httplib::Response& res) {
+               Send(res, games.Status(req.matches[1].str()));
+             });
+  server.Delete(R"(/api/games/([0-9a-f]+))",
+                [&games](const httplib::Request& req, httplib::Response& res) {
+                  Send(res, games.Cancel(req.matches[1].str()));
+                });
+  server.Get(R"(/api/games/([0-9a-f]+)/gcg)",
+             [&games](const httplib::Request& req, httplib::Response& res) {
+               const std::string id = req.matches[1].str();
+               const std::shared_ptr<GameSession> session = games.Find(id);
+               const std::string gcg = session ? session->gcg() : "";
+               if (gcg.empty()) {
+                 Send(res, ErrorResponse(404, "no_gcg",
+                                         "no record for game " + id +
+                                             " (unknown, or still running)"));
+                 return;
+               }
+               res.set_header("Content-Disposition",
+                              "attachment; filename=\"game-" + id + ".gcg\"");
+               res.set_content(gcg, "text/plain; charset=utf-8");
+             });
+  server.Get(R"(/api/games/([0-9a-f]+)/events)",
+             [&games](const httplib::Request& req, httplib::Response& res) {
+               StreamEvents(games, req, res);
              });
 
   // Unknown API paths get a JSON 404 rather than falling through to the
@@ -81,6 +190,7 @@ bool Serve(const Api& api, const HttpOptions& options) {
   };
   server.Get(R"(/api/.*)", not_found);
   server.Post(R"(/api/.*)", not_found);
+  server.Delete(R"(/api/.*)", not_found);
 
   std::error_code ec;
   if (std::filesystem::exists(options.static_dir / "index.html", ec)) {

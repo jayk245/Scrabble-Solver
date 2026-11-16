@@ -61,6 +61,11 @@ Rack RackFromJson(const nlohmann::json& value);
 // on a syntax error.
 Move MoveFromNotation(std::string_view notation);
 
+// Exactly the tiles a move takes from a rack. Used when a move's rack is
+// unknown (e.g. a pasted or recorded game) so validation still checks
+// geometry and words but not tile ownership.
+Rack RackForMove(const Move& move);
+
 // Snake_case identifier for a validation result, e.g. "not_in_rack".
 std::string_view MoveErrorCode(MoveError error);
 

@@ -150,8 +150,7 @@ TEST_F(ApiTest, PlayRejectsIllegalMoves) {
   EXPECT_EQ(response.body["error"], "first_move_off_center");
 }
 
-TEST_F(ApiTest, ReservedEndpoints) {
-  EXPECT_EQ(Api::NotImplemented("streams").status, 501);
+TEST_F(ApiTest, UnknownEndpoints) {
   EXPECT_EQ(Api::NotFound("/api/nope").status, 404);
 }
 

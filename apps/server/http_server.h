@@ -10,6 +10,7 @@
 #include <string>
 
 #include "api.h"
+#include "games.h"
 
 namespace scrabble::server {
 
@@ -23,7 +24,7 @@ struct HttpOptions {
 
 // Listens until the process is terminated. Returns false if the address
 // could not be bound (e.g. the port is in use).
-bool Serve(const Api& api, const HttpOptions& options);
+bool Serve(const Api& api, GamesApi& games, const HttpOptions& options);
 
 }  // namespace scrabble::server
 

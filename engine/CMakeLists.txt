@@ -1,4 +1,25 @@
+# The learned default leave table is compiled into the engine (see
+# LeaveEvaluator::Learned()), regenerated whenever the CSV changes.
+set(SCRABBLE_DEFAULT_LEAVES_CSV
+  ${PROJECT_SOURCE_DIR}/data/leaves/enable_leaves_default.csv)
+set(SCRABBLE_DEFAULT_LEAVES_CC
+  ${CMAKE_CURRENT_BINARY_DIR}/generated/default_leaves_data.cc)
+add_custom_command(
+  OUTPUT ${SCRABBLE_DEFAULT_LEAVES_CC}
+  COMMAND ${CMAKE_COMMAND}
+    -DINPUT=${SCRABBLE_DEFAULT_LEAVES_CSV}
+    -DOUTPUT=${SCRABBLE_DEFAULT_LEAVES_CC}
+    -DSYMBOL=kDefaultLeaves
+    -DNAMESPACE=scrabble::embedded
+    -P ${PROJECT_SOURCE_DIR}/cmake/EmbedFile.cmake
+  DEPENDS
+    ${SCRABBLE_DEFAULT_LEAVES_CSV}
+    ${PROJECT_SOURCE_DIR}/cmake/EmbedFile.cmake
+  COMMENT "Embedding the default leave table"
+  VERBATIM)
+
 add_library(scrabble_engine
+  ${SCRABBLE_DEFAULT_LEAVES_CC}
   src/arena.cc
   src/bag.cc
   src/board.cc

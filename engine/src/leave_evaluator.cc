@@ -7,13 +7,23 @@
 #include <cerrno>
 #include <cstdlib>
 #include <fstream>
+#include <memory>
 #include <optional>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <string_view>
 #include <vector>
 
 namespace scrabble {
+
+// Defined in the source generated from data/leaves/enable_leaves_default.csv
+// by cmake/EmbedFile.cmake (see engine/CMakeLists.txt).
+namespace embedded {
+extern const unsigned char kDefaultLeaves[];
+extern const std::size_t kDefaultLeaves_size;
+}  // namespace embedded
+
 namespace {
 
 // Hand-set single-tile values, loosely after published superleave tables:
@@ -67,6 +77,26 @@ LeaveEvaluator LeaveEvaluator::Heuristic() {
   evaluator.kind_ = Kind::kHeuristic;
   evaluator.name_ = "heuristic";
   return evaluator;
+}
+
+LeaveEvaluator LeaveEvaluator::Learned() {
+  // Embedding, rather than reading the file through a compiled-in path,
+  // means a binary that has been moved or installed elsewhere still gets
+  // the same default leaves, and that no bot ever fails to construct.
+  std::istringstream in(std::string(
+      reinterpret_cast<const char*>(embedded::kDefaultLeaves),
+      embedded::kDefaultLeaves_size));
+  LeaveEvaluator evaluator = Parse(in, "enable_leaves_default.csv");
+  evaluator.name_ = "learned";
+  return evaluator;
+}
+
+std::shared_ptr<const LeaveEvaluator> DefaultLeaves() {
+  // A function-local static: initialised once, thread-safely, on first use,
+  // so programs that never build a default bot never parse the table.
+  static const std::shared_ptr<const LeaveEvaluator> leaves =
+      std::make_shared<const LeaveEvaluator>(LeaveEvaluator::Learned());
+  return leaves;
 }
 
 LeaveEvaluator LeaveEvaluator::Load(const std::filesystem::path& path) {

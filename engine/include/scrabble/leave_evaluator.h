@@ -3,7 +3,10 @@
 // Static equity is score + leave value, so this is the bot's only notion of
 // "future" until Monte Carlo simulation (M7) refines the top candidates.
 //
-// Three sources are supported:
+// Four sources are supported:
+//   * Learned (the default for every bot): the committed learned table
+//     data/leaves/enable_leaves_default.csv, compiled into the engine so no
+//     file has to be found at run time. See Learned() and DefaultLeaves().
 //   * Zero: every leave is worth 0, i.e. pure score maximisation. Used as
 //     the control in A/B tests.
 //   * Heuristic: a small hand-set model (per-tile values, duplicate and
@@ -53,6 +56,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <istream>
+#include <memory>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -72,6 +76,12 @@ class LeaveEvaluator {
 
   static LeaveEvaluator Zero() { return LeaveEvaluator(); }
   static LeaveEvaluator Heuristic();
+
+  // The learned default table (every leave of up to four tiles plus the
+  // fallback model), parsed from the copy embedded at build time. A table
+  // with name() "learned". Each call parses the table again (~10 ms); use
+  // DefaultLeaves() to share one instance.
+  static LeaveEvaluator Learned();
 
   // Reads a leave table (format in the file comment). Throws
   // std::runtime_error naming the file and line on unreadable files,
@@ -94,7 +104,8 @@ class LeaveEvaluator {
   // True if the table has fallback model terms ('@' rows).
   bool has_model() const { return has_model_; }
 
-  // Short label for reports: "zero", "heuristic" or "table:<path>".
+  // Short label for reports: "zero", "heuristic", "learned" or
+  // "table:<path>".
   const std::string& name() const { return name_; }
 
  private:
@@ -135,6 +146,11 @@ class LeaveEvaluator {
   std::array<std::array<double, kRackSize>, kRackSize> balance_terms_{};
   double q_without_u_ = 0.0;
 };
+
+// The process-wide learned default evaluator (LeaveEvaluator::Learned()),
+// parsed on first use and shared by every caller; BotConfig defaults to it.
+// Thread-safe.
+std::shared_ptr<const LeaveEvaluator> DefaultLeaves();
 
 }  // namespace scrabble
 

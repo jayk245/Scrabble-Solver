@@ -1,24 +1,29 @@
 import { useEffect, useState } from 'react';
 
 import { useServerInfo } from './hooks/useServerInfo';
-import { AnalysisView } from './views/AnalysisView';
 import { GameViewerView } from './views/GameViewerView';
+import { PlayView } from './views/PlayView';
+import { SolverView } from './views/SolverView';
 
-type Mode = 'analysis' | 'viewer';
+type Mode = 'solver' | 'play' | 'viewer';
 
 const MODES: { mode: Mode; label: string; hash: string }[] = [
-  { mode: 'analysis', label: 'Analysis', hash: '' },
+  { mode: 'solver', label: 'Solver', hash: '' },
+  { mode: 'play', label: 'Play', hash: '#play' },
   { mode: 'viewer', label: 'Game viewer', hash: '#viewer' },
 ];
 
 function modeFromHash(): Mode {
-  // "#viewer" or "#viewer/<game id>" (see GameViewerView).
-  return window.location.hash.startsWith('#viewer') ? 'viewer' : 'analysis';
+  // "#play" or "#viewer", optionally followed by "/<game id>".
+  const { hash } = window.location;
+  if (hash.startsWith('#play')) return 'play';
+  if (hash.startsWith('#viewer')) return 'viewer';
+  return 'solver';
 }
 
 /**
- * Application shell. The two views are both kept mounted and only hidden
- * when inactive, so switching tabs never loses the analysis board or a game
+ * Application shell. The views are all kept mounted and only hidden when
+ * inactive, so switching tabs never loses the solver's position or a game
  * in progress. The active view is mirrored in the URL hash so it survives
  * a reload and can be linked to.
  */
@@ -81,8 +86,11 @@ export function App() {
       <main className="app-main">
         {server.status === 'ready' && (
           <>
-            <div hidden={mode !== 'analysis'}>
-              <AnalysisView rules={server.rules} />
+            <div hidden={mode !== 'solver'}>
+              <SolverView rules={server.rules} />
+            </div>
+            <div hidden={mode !== 'play'}>
+              <PlayView rules={server.rules} active={mode === 'play'} />
             </div>
             <div hidden={mode !== 'viewer'}>
               <GameViewerView rules={server.rules} active={mode === 'viewer'} />

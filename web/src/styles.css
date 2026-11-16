@@ -814,7 +814,7 @@ button:disabled {
 
 .stat-row {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(auto-fit, minmax(80px, 1fr));
   gap: 8px;
   margin: 0;
 }
@@ -1362,5 +1362,228 @@ button:disabled {
 
   .game-log button > :last-child {
     display: none;
+  }
+}
+
+/* ---- Play (human vs bot) ---------------------------------------------- */
+
+.play-controls {
+  width: min(100%, calc(100vh - 300px));
+  min-width: 280px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.play-status {
+  margin: 0;
+  font-size: 0.9rem;
+}
+
+.play-status.is-loading strong {
+  animation: pulse 1.4s ease-in-out infinite;
+}
+
+.player-rack {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.rack-tiles.is-interactive {
+  max-width: 460px;
+}
+
+.rack-tiles.is-interactive .rack-tile {
+  border: 0;
+  padding: 0;
+  font: inherit;
+  cursor: pointer;
+  transition:
+    transform 80ms ease,
+    opacity 80ms ease;
+}
+
+.rack-tiles.is-interactive .rack-tile:hover:not(:disabled) {
+  transform: translateY(-2px);
+}
+
+.rack-tiles.is-interactive .rack-tile:disabled {
+  cursor: default;
+  opacity: 1;
+}
+
+.rack-tile.is-used {
+  opacity: 0.3;
+}
+
+.rack-tile.is-selected {
+  transform: translateY(-5px);
+  box-shadow:
+    inset 0 -3px 0 var(--tile-edge),
+    0 0 0 2px var(--accent);
+}
+
+.rack-tiles.is-interactive .rack-tile.is-selected:hover:not(:disabled) {
+  transform: translateY(-5px);
+}
+
+.blank-picker {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.blank-letters {
+  display: grid;
+  grid-template-columns: repeat(13, minmax(0, 1fr));
+  gap: 3px;
+  flex: 1 1 100%;
+}
+
+.blank-letters .button-ghost {
+  padding: 4px 0;
+  font-family: var(--font-mono);
+}
+
+.play-buttons .button-primary {
+  min-width: 6.5em;
+}
+
+.verdict.is-neutral {
+  background: var(--surface-muted);
+  color: var(--text);
+  border: 1px solid var(--border);
+}
+
+.link-button {
+  border: 0;
+  padding: 0;
+  background: none;
+  color: var(--accent-strong);
+  font: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.review-table tbody tr.is-mistake td:last-child {
+  color: var(--danger);
+  font-weight: 650;
+}
+
+.row-action {
+  text-align: right;
+  white-space: nowrap;
+}
+
+.row-action .button-ghost {
+  padding: 2px 8px;
+}
+
+/* ---- Solver ------------------------------------------------------------ */
+
+/* The candidate tables carry an action column, so the side column is a
+   little wider than the viewer's on desktop. */
+@media (min-width: 1001px) {
+  .analysis.solver,
+  .analysis.play {
+    grid-template-columns: minmax(0, 1fr) minmax(380px, 520px);
+  }
+}
+
+.candidate-table {
+  overflow-x: auto;
+}
+
+.candidate-table .move-table th,
+.candidate-table .move-table td {
+  padding-left: 5px;
+  padding-right: 5px;
+}
+
+.players-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.player-edit {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  min-width: 0;
+}
+
+.player-edit .field {
+  flex: none;
+}
+
+.player-edit.is-to-move {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}
+
+.solver-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.best-move {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: var(--accent-soft);
+}
+
+.best-move > div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.best-notation {
+  font-size: 1.25rem;
+  color: var(--accent-strong);
+  overflow-wrap: anywhere;
+}
+
+.solver-log {
+  max-height: 260px;
+}
+
+/* The record sits in a narrow column; let the player and move columns
+   share the space instead of fixed widths. */
+.solver-log button {
+  grid-template-columns: 1.6em minmax(0, 1fr) minmax(0, 1.5fr) 2.8em 4.6em;
+  font-size: 0.84rem;
+}
+
+@media (max-width: 600px) {
+  .players-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .play-controls {
+    min-width: 0;
+  }
+
+  .blank-letters {
+    grid-template-columns: repeat(7, minmax(0, 1fr));
+  }
+
+  .candidate-table .move-table th,
+  .candidate-table .move-table td {
+    padding-left: 4px;
+    padding-right: 4px;
   }
 }

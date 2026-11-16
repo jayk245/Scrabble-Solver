@@ -50,10 +50,11 @@ integration tests are skipped if the list has not been fetched.
 
 ## Web UI
 
-An analysis board in the browser: set up a position, enter a rack, and
-browse every legal move ranked by score with board previews. The C++ server
-(`apps/server`, cpp-httplib + nlohmann/json) loads the GADDAG once and
-answers stateless JSON requests; the frontend (`web/`) is React +
+An analysis board in the browser (set up a position, enter a rack, and
+browse every legal move ranked by score with board previews) and a game
+viewer for self-play and GCG replays (below). The C++ server
+(`apps/server`, cpp-httplib + nlohmann/json) loads the GADDAG once,
+answers stateless JSON requests and streams games; the frontend (`web/`) is React +
 TypeScript built with Vite. Requires Node.js 20.19+ or 22.12+.
 
 Production (one process; the server also serves `web/dist`):
@@ -73,6 +74,44 @@ Development (hot reload; Vite proxies `/api` to the server):
 Server flags: `--port` (8080), `--host` (127.0.0.1), `--lexicon PATH`,
 `--static-dir DIR`. Endpoints are documented in `apps/server/api.h`, and
 the JSON schema in `web/src/api/types.ts`.
+
+### Game viewer
+
+The **Game viewer** tab watches the bot play itself, or replays a GCG
+record, move by move: both racks, scores and bag count, the last move
+highlighted, a clickable move log, and playback controls (play/pause, step,
+scrub, speed; ←/→, Space, Home/End). For each move the analysis panel shows
+how it was chosen: the top static candidates, or for a simulated move each
+candidate's mean rollout value ± standard error (as a bar chart), or the
+endgame solver's value and best line. Hovering a candidate previews it on
+the board. Finished games download as GCG, and `#viewer/<id>` links reopen
+a game while the server keeps it (15 minutes after it ends).
+
+Each player is configured separately: leave model (learned, heuristic or
+none), Monte Carlo simulation (candidates ≤ 20, iterations ≤ 1,000, plies
+≤ 4) and the endgame solver, plus the seed and NASPA/WESPA end rules.
+
+How it works:
+
+* `POST /api/games` starts a self-play game on a server worker thread (at
+  most two at once, two simulation threads each), or parses, validates and
+  annotates a GCG record up front (`ParseGcg()` in `engine/include/scrabble/gcg.h`).
+* `GET /api/games/{id}/events` streams the game as Server-Sent Events:
+  `start`, one `move` per turn, then `end` with the final scores and the
+  GCG. Every event is kept in an in-memory log, so a reconnecting client
+  resumes from `Last-Event-ID` and a finished game can be watched again.
+* The browser buffers every event and plays them back itself, so pausing,
+  stepping and changing speed are instant; if playback catches up with a
+  game still being computed it waits for the next move.
+* `DELETE /api/games/{id}` stops a game; one nobody is watching is stopped
+  after two minutes.
+
+```sh
+curl -s localhost:8080/api/games -d '{"seed": 42, "players": [
+  {"name": "sim", "simulation": {"enabled": true}, "endgame": {"enabled": true}},
+  {"name": "static"}]}'                         # -> {"id": "...", ...}
+curl -N localhost:8080/api/games/<id>/events    # watch the stream
+```
 
 ## Move generation benchmark
 
@@ -360,5 +399,5 @@ from learned leaves over the heuristic. Next ideas:
 | 6 | Learned rack-leave values | ✅ |
 | 7 | Monte Carlo simulation | ✅ |
 | 8 | Endgame solver | ✅ |
-| 9 | Web UI + server | |
+| 9 | Web UI + server | ✅ |
 | 10 | Benchmarks against external engines | |

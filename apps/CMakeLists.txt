@@ -15,6 +15,11 @@ target_link_libraries(scrabble_endgame_bench PRIVATE scrabble::engine)
 target_compile_definitions(scrabble_endgame_bench PRIVATE
   SCRABBLE_LEXICA_DIR="${PROJECT_SOURCE_DIR}/data/lexica")
 
+add_executable(scrabble_sim_bench sim_bench/main.cc)
+target_link_libraries(scrabble_sim_bench PRIVATE scrabble::engine)
+target_compile_definitions(scrabble_sim_bench PRIVATE
+  SCRABBLE_LEXICA_DIR="${PROJECT_SOURCE_DIR}/data/lexica")
+
 add_executable(scrabble_arena arena/main.cc)
 target_link_libraries(scrabble_arena PRIVATE scrabble::engine)
 target_compile_definitions(scrabble_arena PRIVATE

@@ -5,13 +5,22 @@
 //                       [--rules naspa|wespa] [--gcg-dir DIR] [--log FILE]
 //                       [--endgame-a] [--endgame-b] [--endgame-nodes N]
 //                       [--endgame-ms T]
+//                       [--sim-a] [--sim-b] [--sim-candidates N]
+//                       [--sim-iterations N] [--sim-plies N]
+//                       [--sim-min-iterations N] [--sim-prune-z Z]
+//                       [--sim-threads N] [--sim-ms T] [--sim-no-crn]
 //
-// L is "heuristic" (default), "zero", or the path of a leave table CSV (see
+// L is "learned" (default: the learned table built into the engine),
+// "heuristic", "zero", or the path of a leave table CSV (see
 // leave_evaluator.h). --log writes the JSONL training log documented in
 // arena.h. --endgame-a / --endgame-b turn on the endgame solver for that
 // configuration, limited to --endgame-nodes nodes (default 2,000,000) and,
-// if given, --endgame-ms milliseconds per move. Results are identical for
-// any --threads value, unless --endgame-ms makes them timing-dependent.
+// if given, --endgame-ms milliseconds per move. --sim-a / --sim-b turn on
+// Monte Carlo simulation (simulation.h) with the --sim-* settings, which
+// default to SimulationConfig's except --sim-threads: games already run in
+// parallel, so each decision simulates on one thread unless asked
+// otherwise. Results are identical for any --threads value, unless
+// --endgame-ms or --sim-ms makes them timing-dependent.
 
 #include <algorithm>
 #include <cstdint>
@@ -32,6 +41,7 @@
 #include "scrabble/game.h"
 #include "scrabble/leave_evaluator.h"
 #include "scrabble/lexicon.h"
+#include "scrabble/simulation.h"
 
 namespace {
 
@@ -41,8 +51,8 @@ struct Options {
   std::uint64_t seed = 1;
   std::filesystem::path lexicon =
       std::filesystem::path(SCRABBLE_LEXICA_DIR) / "enable1.txt";
-  std::string leaves_a = "heuristic";
-  std::string leaves_b = "heuristic";
+  std::string leaves_a = "learned";
+  std::string leaves_b = "learned";
   scrabble::EndRules rules = scrabble::EndRules::kNaspa;
   std::filesystem::path gcg_dir;
   std::filesystem::path log;
@@ -50,13 +60,20 @@ struct Options {
   bool endgame_b = false;
   std::int64_t endgame_nodes = scrabble::EndgameConfig{}.node_limit;
   std::int64_t endgame_ms = 0;
+  bool sim_a = false;
+  bool sim_b = false;
+  scrabble::SimulationConfig sim;
 };
 
 constexpr std::string_view kUsage =
     " [--games N] [--threads T] [--seed S] [--lexicon PATH]\n"
-    "    [--leaves-a heuristic|zero|FILE] [--leaves-b heuristic|zero|FILE]\n"
+    "    [--leaves-a learned|heuristic|zero|FILE]\n"
+    "    [--leaves-b learned|heuristic|zero|FILE]\n"
     "    [--rules naspa|wespa] [--gcg-dir DIR] [--log FILE]\n"
-    "    [--endgame-a] [--endgame-b] [--endgame-nodes N] [--endgame-ms T]\n";
+    "    [--endgame-a] [--endgame-b] [--endgame-nodes N] [--endgame-ms T]\n"
+    "    [--sim-a] [--sim-b] [--sim-candidates N] [--sim-iterations N]\n"
+    "    [--sim-plies N] [--sim-min-iterations N] [--sim-prune-z Z]\n"
+    "    [--sim-threads N] [--sim-ms T] [--sim-no-crn]\n";
 
 bool ParsePositive(const char* text, int& out) {
   char* end = nullptr;
@@ -75,6 +92,14 @@ bool ParseArgs(int argc, char** argv, Options& options) {
     }
     if (arg == "--endgame-b") {
       options.endgame_b = true;
+      continue;
+    }
+    if (arg == "--sim-a" || arg == "--sim-b") {
+      (arg == "--sim-a" ? options.sim_a : options.sim_b) = true;
+      continue;
+    }
+    if (arg == "--sim-no-crn") {
+      options.sim.common_random_numbers = false;
       continue;
     }
     if (i + 1 >= argc) return false;
@@ -112,6 +137,30 @@ bool ParseArgs(int argc, char** argv, Options& options) {
       if (*end != '\0' || n < 0) return false;
       (arg == "--endgame-nodes" ? options.endgame_nodes : options.endgame_ms) =
           n;
+    } else if (arg == "--sim-candidates") {
+      if (!ParsePositive(value, options.sim.candidates)) return false;
+    } else if (arg == "--sim-iterations") {
+      if (!ParsePositive(value, options.sim.iterations)) return false;
+    } else if (arg == "--sim-min-iterations") {
+      if (!ParsePositive(value, options.sim.min_iterations)) return false;
+    } else if (arg == "--sim-threads") {
+      if (!ParsePositive(value, options.sim.threads)) return false;
+    } else if (arg == "--sim-plies") {
+      char* end = nullptr;
+      const long n = std::strtol(value, &end, 10);
+      if (*end != '\0' || n < 0 || n > scrabble::kMaxSimulationPlies) {
+        return false;
+      }
+      options.sim.plies = static_cast<int>(n);
+    } else if (arg == "--sim-prune-z") {
+      char* end = nullptr;
+      options.sim.prune_z = std::strtod(value, &end);
+      if (*end != '\0') return false;
+    } else if (arg == "--sim-ms") {
+      char* end = nullptr;
+      const long long n = std::strtoll(value, &end, 10);
+      if (*end != '\0' || n < 0) return false;
+      options.sim.time_limit_ms = n;
     } else {
       return false;
     }
@@ -120,9 +169,11 @@ bool ParseArgs(int argc, char** argv, Options& options) {
 }
 
 scrabble::BotConfig MakeBot(const std::string& leaves, bool endgame,
-                            const Options& options) {
+                            bool simulation, const Options& options) {
   scrabble::BotConfig config;
-  if (leaves == "heuristic") {
+  if (leaves == "learned") {
+    config.leaves = scrabble::DefaultLeaves();
+  } else if (leaves == "heuristic") {
     config.leaves = std::make_shared<const scrabble::LeaveEvaluator>(
         scrabble::LeaveEvaluator::Heuristic());
   } else if (leaves == "zero") {
@@ -139,6 +190,13 @@ scrabble::BotConfig MakeBot(const std::string& leaves, bool endgame,
     config.endgame.time_limit_ms = options.endgame_ms;
     config.name += "+endgame";
   }
+  if (simulation) {
+    config.simulation = options.sim;
+    config.simulation.enabled = true;
+    config.name += "+sim(" + std::to_string(options.sim.candidates) + "x" +
+                   std::to_string(options.sim.iterations) + "x" +
+                   std::to_string(options.sim.plies) + ")";
+  }
   return config;
 }
 
@@ -150,8 +208,10 @@ int Run(const Options& options) {
   config.threads = options.threads;
   config.seed = options.seed;
   config.game.end_rules = options.rules;
-  config.bot_a = MakeBot(options.leaves_a, options.endgame_a, options);
-  config.bot_b = MakeBot(options.leaves_b, options.endgame_b, options);
+  config.bot_a =
+      MakeBot(options.leaves_a, options.endgame_a, options.sim_a, options);
+  config.bot_b =
+      MakeBot(options.leaves_b, options.endgame_b, options.sim_b, options);
   config.gcg_dir = options.gcg_dir;
   std::ofstream log;
   if (!options.log.empty()) {
@@ -194,9 +254,13 @@ int Run(const Options& options) {
   std::printf("Time          %.2f s (%.1f games/s)\n", result.seconds,
               result.seconds > 0 ? s.games / result.seconds : 0.0);
   // Thread-seconds per game: what one game costs on one core.
+  const double thread_seconds =
+      result.seconds * std::min(options.threads, s.games);
   std::printf("Time/game     %.1f ms per thread\n",
-              s.games > 0 ? 1e3 * result.seconds *
-                                std::min(options.threads, s.games) / s.games
+              s.games > 0 ? 1e3 * thread_seconds / s.games : 0.0);
+  std::printf("Time/move     %.2f ms per thread\n",
+              s.games > 0 ? 1e3 * thread_seconds /
+                                (s.turns_per_game * s.games)
                           : 0.0);
   return 0;
 }

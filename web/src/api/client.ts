@@ -3,9 +3,14 @@
 // C++ server serves this page itself, so no host configuration is needed.
 
 import type {
+  AnalyzeRequest,
+  AnalyzeResponse,
   ApiErrorBody,
   GameSummary,
   HealthResponse,
+  HumanMoveRequest,
+  HumanMoveResponse,
+  MoveAnalysis,
   MovesRequest,
   MovesResponse,
   PlayRequest,
@@ -86,6 +91,11 @@ export const api = {
   startGame: (body: StartGameRequest) => post<StartGameResponse>('/api/games', body),
   cancelGame: (id: string) =>
     request<GameSummary>(`/api/games/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  humanMove: (id: string, body: HumanMoveRequest) =>
+    post<HumanMoveResponse>(`/api/games/${encodeURIComponent(id)}/moves`, body),
+  hint: (id: string) => request<MoveAnalysis>(`/api/games/${encodeURIComponent(id)}/hint`),
+  analyze: (body: AnalyzeRequest, signal?: AbortSignal) =>
+    post<AnalyzeResponse>('/api/analyze', body, signal),
 };
 
 /** Server-Sent Events stream of a game (consumed with EventSource). */

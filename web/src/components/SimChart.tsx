@@ -5,6 +5,8 @@ export interface SimChartProps {
   candidates: Candidate[];
   hovered: Candidate | null;
   onHover: (candidate: Candidate | null) => void;
+  /** Badge on the chosen candidate. */
+  chosenLabel?: string;
 }
 
 function formatSigned(value: number): string {
@@ -18,7 +20,7 @@ function formatSigned(value: number): string {
  * so neither distinction relies on colour alone. Built from HTML rather
  * than SVG so labels stay crisp and wrap with the panel width.
  */
-export function SimChart({ candidates, hovered, onHover }: SimChartProps) {
+export function SimChart({ candidates, hovered, onHover, chosenLabel = 'played' }: SimChartProps) {
   const rows = candidates.filter((c) => c.sim !== undefined);
   if (rows.length === 0) return null;
 
@@ -65,7 +67,7 @@ export function SimChart({ candidates, hovered, onHover }: SimChartProps) {
           >
             <span className="sim-label notation" role="cell">
               {candidate.move.notation}
-              {candidate.chosen && <span className="badge">played</span>}
+              {candidate.chosen && <span className="badge">{chosenLabel}</span>}
               {sim.pruned && <span className="badge badge-muted">pruned</span>}
             </span>
             <span className="sim-track" role="cell">

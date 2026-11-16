@@ -19,6 +19,8 @@ const END_REASON: Record<GameEndEvent['reason'], string> = {
   record_end: 'end of record',
   cancelled: 'cancelled',
   error: 'error',
+  resigned: 'resigned',
+  abandoned: 'abandoned',
 };
 
 function isTextField(target: EventTarget | null): boolean {

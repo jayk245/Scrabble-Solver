@@ -189,6 +189,9 @@ export interface PlayerConfig {
   };
 }
 
+/** Bot presets for human-vs-bot games (apps/server/human_game.h). */
+export type BotStrength = 'easy' | 'normal' | 'hard' | 'expert';
+
 export type StartGameRequest =
   | {
       mode: 'selfplay';
@@ -199,19 +202,35 @@ export type StartGameRequest =
       analysisCandidates?: number;
       players?: [PlayerConfig, PlayerConfig];
     }
-  | { mode: 'replay'; gcg: string };
+  | { mode: 'replay'; gcg: string }
+  | {
+      mode: 'human';
+      /** The human's name: 1-24 letters, digits, '_' or '-' (not "bot"). */
+      name?: string;
+      strength?: BotStrength;
+      /** Default true. The first player sits in seat 0. */
+      humanFirst?: boolean;
+      /** Random when omitted; a random seed is revealed only at the end. */
+      seed?: number;
+      rules?: EndRulesName;
+    };
+
+export type GameMode = 'selfplay' | 'replay' | 'human';
 
 export interface StartGameResponse {
   id: string;
-  mode: 'selfplay' | 'replay';
+  mode: GameMode;
   /** URL of the event stream. */
   events: string;
+  /** Echoed when the client chose it. */
   seed?: number;
+  /** Human games: the human's seat. */
+  humanSeat?: 0 | 1;
 }
 
 export interface GameSummary {
   id: string;
-  mode: 'selfplay' | 'replay';
+  mode: GameMode;
   status: 'running' | 'finished' | 'cancelled';
   events: number;
   hasGcg: boolean;
@@ -223,6 +242,10 @@ export type Seats<T> = [T, T];
 /** A player as described by the start event. */
 export interface GamePlayer {
   name: string;
+  /** Human games: who sits in this seat. */
+  kind?: 'human' | 'bot';
+  /** Human games: the bot's preset. */
+  strength?: BotStrength;
   /** Replays: the GCG full name. */
   fullName?: string;
   /** Self-play: the settings the bot ran with, after defaults. */
@@ -233,7 +256,7 @@ export interface GamePlayer {
 
 export interface GameStartEvent {
   type: 'start';
-  mode: 'selfplay' | 'replay';
+  mode: GameMode;
   players: Seats<GamePlayer>;
   board: BoardRows;
   /** Opening racks; null where a replayed record does not say. */
@@ -247,6 +270,10 @@ export interface GameStartEvent {
   /** Replay only. */
   title?: string;
   lexicon?: string;
+  /** Human games: the human's seat, the bot's preset and who moves first. */
+  humanSeat?: 0 | 1;
+  strength?: BotStrength;
+  toMove?: 0 | 1;
 }
 
 /** Rollout statistics for one simulated candidate (spread points). */
@@ -315,7 +342,7 @@ export interface GameMoveEvent {
   kind: 'play' | 'withdrawn' | 'adjustment';
   /** Display text, e.g. "8D RETAINS", "-- (withdrawn)", "(challenge) +5". */
   label: string;
-  /** Mover's rack before the move. */
+  /** Mover's rack before the move (null for a human game's bot moves). */
   rack: string | null;
   move: MoveInfo | null;
   /** Points for this event (negative for withdrawals and penalties). */
@@ -339,11 +366,37 @@ export interface GameMoveEvent {
   /** Replay: a word missing from the lexicon, or a score discrepancy. */
   warning?: string;
   analysis?: MoveAnalysis;
+  /** Human games: the seat to move next; null once the game is over. */
+  toMove?: 0 | 1 | null;
+}
+
+/** Human games: one of the human's moves judged against the engine. */
+export interface ReviewEntry {
+  /** Turn index, matching GameMoveEvent.turn. */
+  turn: number;
+  notation: string;
+  score: number;
+  /** Static equity of the move played. */
+  equity: number;
+  /** 1 + the number of moves with higher static equity. */
+  rank: number;
+  totalMoves: number;
+  /** The engine's best static move. */
+  best?: Candidate;
+  /** best.equity - equity, never negative. */
+  equityLost?: number;
 }
 
 export interface GameEndEvent {
   type: 'end';
-  reason: 'went_out' | 'scoreless_turns' | 'record_end' | 'cancelled' | 'error';
+  reason:
+    | 'went_out'
+    | 'scoreless_turns'
+    | 'record_end'
+    | 'cancelled'
+    | 'error'
+    | 'resigned'
+    | 'abandoned';
   /** Absent only when reason is 'error'. */
   scores?: Seats<number>;
   /** End-of-game rack adjustments, already included in `scores`. */
@@ -355,6 +408,77 @@ export interface GameEndEvent {
   gcg?: string;
   /** reason 'error': what went wrong. */
   message?: string;
+  /** Human games: the seed (now safe to reveal), the review and hints used. */
+  seed?: number;
+  humanSeat?: 0 | 1;
+  review?: ReviewEntry[];
+  hintsUsed?: number;
 }
 
 export type GameEvent = GameStartEvent | GameMoveEvent | GameEndEvent;
+
+// ---------------------------------------------------------------------------
+// Human-vs-bot games (apps/server/human_game.h)
+//
+//   POST /api/games/{id}/moves   HumanMoveRequest -> HumanMoveResponse.
+//                                409 not_your_turn | game_over; 422 with a
+//                                MoveErrorCode or "exchange_not_allowed".
+//   GET  /api/games/{id}/hint    MoveAnalysis of the human's rack (static,
+//                                top 5); 409 unless it is the human's turn.
+// ---------------------------------------------------------------------------
+
+/** A move in notation ("8D RETAINS", "-ABC" to exchange, "-" to pass), or a resignation. */
+export type HumanMoveRequest = { move: string } | { resign: true };
+
+export interface HumanMoveResponse {
+  turn?: number;
+  move?: MoveInfo;
+  score?: number;
+  /** The human's rack after drawing. */
+  rack?: string;
+  drawn?: string;
+  bag?: number;
+  scores?: Seats<number>;
+  gameOver: boolean;
+  reason?: 'resigned';
+}
+
+// ---------------------------------------------------------------------------
+// Position solver: POST /api/analyze (apps/server/analyze.h)
+// ---------------------------------------------------------------------------
+
+export type Effort = 'static' | 'quick' | 'normal' | 'deep';
+
+export interface AnalyzeRequest {
+  board?: BoardRows;
+  /** The mover's rack (required). */
+  rack: string;
+  /** The opponent's exact rack, if known: 7 tiles unless the bag is empty. */
+  opponentRack?: string;
+  score?: number;
+  opponentScore?: number;
+  /** Consecutive scoreless turns so far (0-5). */
+  scorelessTurns?: number;
+  rules?: EndRulesName;
+  effort?: Effort;
+  /** Overrides of the preset, within the server's caps. */
+  simulation?: { candidates?: number; iterations?: number; plies?: number; timeLimitMs?: number };
+  endgame?: { timeLimitMs?: number; nodeLimit?: number };
+  /** Static candidates listed (1-30) when not simulating. */
+  limit?: number;
+  seed?: number;
+}
+
+/** The engine's ranking; the "chosen" candidate is its move. */
+export interface AnalyzeResponse extends MoveAnalysis {
+  effort: Effort;
+  elapsedMs: number;
+  position: {
+    unseen: PerLetter;
+    unseenCount: number;
+    bagCount: number;
+    opponentRackSize: number;
+    opponentRackKnown: boolean;
+    tilesOnBoard: number;
+  };
+}

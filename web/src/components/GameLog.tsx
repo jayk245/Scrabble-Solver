@@ -10,13 +10,22 @@ export interface GameLogProps {
   onSeek: (cursor: number) => void;
   /** Whether more moves are still being computed. */
   live: boolean;
+  /** Shown under the list while `live`. */
+  thinkingLabel?: string;
 }
 
 /**
  * Every move of the game; clicking one shows the position after it. The
  * row for the current position stays scrolled into view during playback.
  */
-export function GameLog({ moves, names, cursor, onSeek, live }: GameLogProps) {
+export function GameLog({
+  moves,
+  names,
+  cursor,
+  onSeek,
+  live,
+  thinkingLabel = 'The bots are thinking…',
+}: GameLogProps) {
   const list = useRef<HTMLOListElement>(null);
   const current = useRef<HTMLLIElement>(null);
   // Scrolls only the list, never the page (scrollIntoView would scroll
@@ -78,7 +87,9 @@ export function GameLog({ moves, names, cursor, onSeek, live }: GameLogProps) {
         })}
       </ol>
       {moves.length === 0 && <p className="empty-state">Waiting for the first move…</p>}
-      {live && moves.length > 0 && <p className="hint is-loading">The bots are thinking…</p>}
+      {live && moves.length > 0 && thinkingLabel && (
+        <p className="hint is-loading">{thinkingLabel}</p>
+      )}
     </section>
   );
 }

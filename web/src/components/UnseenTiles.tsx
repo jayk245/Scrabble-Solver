@@ -1,13 +1,18 @@
 import type { PositionSummary } from '../api/types';
 
-const LETTERS = [...'ABCDEFGHIJKLMNOPQRSTUVWXYZ?'];
+import { TILE_LETTERS as LETTERS } from '../lib/tiles';
 
 export interface UnseenTilesProps {
   position: PositionSummary | null;
+  /** Footnote under the grid; defaults to how the bag count is estimated. */
+  note?: string;
 }
 
 /** Tiles not on the board or the rack, with bag and board counts. */
-export function UnseenTiles({ position }: UnseenTilesProps) {
+export function UnseenTiles({
+  position,
+  note = 'The bag count assumes the opponent holds a full rack.',
+}: UnseenTilesProps) {
   return (
     <section className="panel" aria-labelledby="unseen-heading">
       <div className="panel-header">
@@ -43,7 +48,7 @@ export function UnseenTiles({ position }: UnseenTilesProps) {
           More {[...position.overused].join(', ')} than the bag contains.
         </p>
       )}
-      <p className="hint">The bag count assumes the opponent holds a full rack.</p>
+      {note && <p className="hint">{note}</p>}
     </section>
   );
 }

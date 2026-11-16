@@ -1,4 +1,5 @@
 import type { Candidate, GameMoveEvent } from '../api/types';
+import { CandidateTable } from './CandidateTable';
 import { SimChart } from './SimChart';
 
 export interface AnalysisPanelProps {
@@ -100,48 +101,13 @@ export function AnalysisPanel({ event, playerName, hovered, onHover }: AnalysisP
             <SimChart candidates={analysis.candidates} hovered={hovered} onHover={onHover} />
           )}
 
-          <div className="move-table-wrap candidate-table" onMouseLeave={() => onHover(null)}>
-            <table className="move-table">
-              <thead>
-                <tr>
-                  <th className="numeric">#</th>
-                  <th>Move</th>
-                  <th className="numeric">Score</th>
-                  <th className="numeric">Equity</th>
-                  {analysis.method === 'simulation' && <th className="numeric">Sim</th>}
-                  <th>Leave</th>
-                </tr>
-              </thead>
-              <tbody>
-                {analysis.candidates.map((candidate) => (
-                  <tr
-                    key={candidate.move.notation}
-                    className={[
-                      candidate.chosen ? 'is-chosen' : '',
-                      candidate === hovered ? 'is-selected' : '',
-                    ].join(' ')}
-                    onMouseEnter={() => onHover(candidate)}
-                  >
-                    <td className="numeric muted">{candidate.staticRank ?? '–'}</td>
-                    <td className="notation">
-                      {candidate.move.notation}
-                      {candidate.chosen && <span className="badge">played</span>}
-                    </td>
-                    <td className="numeric score">{candidate.move.score}</td>
-                    <td className="numeric">{candidate.equity.toFixed(1)}</td>
-                    {analysis.method === 'simulation' && (
-                      <td className="numeric">
-                        {candidate.sim
-                          ? `${formatSigned(candidate.sim.mean)} ± ${candidate.sim.stdError.toFixed(1)}`
-                          : '–'}
-                      </td>
-                    )}
-                    <td className="leave">{candidate.move.leave || '—'}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          <CandidateTable
+            candidates={analysis.candidates}
+            hovered={hovered}
+            onHover={onHover}
+            showSim={analysis.method === 'simulation'}
+            chosenLabel="played"
+          />
           <p className="hint">Hover a candidate to preview it on the board.</p>
         </>
       )}

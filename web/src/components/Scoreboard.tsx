@@ -16,6 +16,8 @@ export interface ScoreboardProps {
 }
 
 function describe(player: GamePlayer): string {
+  if (player.kind === 'human') return 'you';
+  if (player.kind === 'bot') return `${player.strength ?? 'normal'} bot`;
   if (player.fullName && player.fullName !== player.name) return player.fullName;
   if (!player.leaves) return '';
   const parts = [`${player.leaves} leaves`];

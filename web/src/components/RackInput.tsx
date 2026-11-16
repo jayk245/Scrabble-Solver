@@ -1,4 +1,5 @@
-import { normaliseRack, RACK_SIZE } from '../lib/rack';
+import { normaliseRack } from '../lib/rack';
+import { RackTiles } from './RackTiles';
 
 export interface RackInputProps {
   rack: string;
@@ -10,7 +11,6 @@ export interface RackInputProps {
 
 /** Text entry for the rack, with the tiles drawn underneath. */
 export function RackInput({ rack, tileValues, onChange, onRandom }: RackInputProps) {
-  const slots = Array.from({ length: RACK_SIZE }, (_, i) => rack[i] ?? null);
   return (
     <section className="panel" aria-labelledby="rack-heading">
       <div className="panel-header">
@@ -38,18 +38,7 @@ export function RackInput({ rack, tileValues, onChange, onRandom }: RackInputPro
         spellCheck={false}
         autoComplete="off"
       />
-      <div className="rack-tiles" aria-hidden="true">
-        {slots.map((tile, i) =>
-          tile ? (
-            <span key={i} className={`rack-tile${tile === '?' ? ' is-blank' : ''}`}>
-              <span className="tile-letter">{tile === '?' ? '' : tile}</span>
-              {tile !== '?' && <span className="tile-value">{tileValues[tile]}</span>}
-            </span>
-          ) : (
-            <span key={i} className="rack-tile is-empty" />
-          ),
-        )}
-      </div>
+      <RackTiles rack={rack} tileValues={tileValues} />
       <p className="hint">Letters, or ? for a blank. Moves update as you type.</p>
     </section>
   );

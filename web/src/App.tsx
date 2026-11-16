@@ -1,13 +1,43 @@
+import { useEffect, useState } from 'react';
+
 import { useServerInfo } from './hooks/useServerInfo';
 import { AnalysisView } from './views/AnalysisView';
+import { GameViewerView } from './views/GameViewerView';
+
+type Mode = 'analysis' | 'viewer';
+
+const MODES: { mode: Mode; label: string; hash: string }[] = [
+  { mode: 'analysis', label: 'Analysis', hash: '' },
+  { mode: 'viewer', label: 'Game viewer', hash: '#viewer' },
+];
+
+function modeFromHash(): Mode {
+  // "#viewer" or "#viewer/<game id>" (see GameViewerView).
+  return window.location.hash.startsWith('#viewer') ? 'viewer' : 'analysis';
+}
 
 /**
- * Application shell. Views are selected by mode; the game viewer (replays
- * and live self-play over Server-Sent Events) will slot in next to the
- * analysis board and reuse its Board and MoveList components.
+ * Application shell. The two views are both kept mounted and only hidden
+ * when inactive, so switching tabs never loses the analysis board or a game
+ * in progress. The active view is mirrored in the URL hash so it survives
+ * a reload and can be linked to.
  */
 export function App() {
   const server = useServerInfo();
+  const [mode, setMode] = useState<Mode>(modeFromHash);
+
+  useEffect(() => {
+    const onHashChange = () => setMode(modeFromHash());
+    window.addEventListener('hashchange', onHashChange);
+    return () => window.removeEventListener('hashchange', onHashChange);
+  }, []);
+
+  const select = (next: Mode) => {
+    const hash = MODES.find((m) => m.mode === next)?.hash ?? '';
+    // replaceState avoids a history entry per tab switch.
+    window.history.replaceState(null, '', hash || window.location.pathname);
+    setMode(next);
+  };
 
   return (
     <div className="app">
@@ -19,12 +49,17 @@ export function App() {
           <span className="brand-name">Scrabble Engine</span>
         </div>
         <nav className="mode-nav" aria-label="Mode">
-          <button type="button" className="mode-tab is-active" aria-current="page">
-            Analysis
-          </button>
-          <button type="button" className="mode-tab" disabled title="Coming with the self-play arena">
-            Game viewer <span className="badge">soon</span>
-          </button>
+          {MODES.map((entry) => (
+            <button
+              key={entry.mode}
+              type="button"
+              className={`mode-tab${mode === entry.mode ? ' is-active' : ''}`}
+              aria-current={mode === entry.mode ? 'page' : undefined}
+              onClick={() => select(entry.mode)}
+            >
+              {entry.label}
+            </button>
+          ))}
         </nav>
         <div className="server-status">
           {server.status === 'ready' && (
@@ -44,7 +79,16 @@ export function App() {
       </header>
 
       <main className="app-main">
-        {server.status === 'ready' && <AnalysisView rules={server.rules} />}
+        {server.status === 'ready' && (
+          <>
+            <div hidden={mode !== 'analysis'}>
+              <AnalysisView rules={server.rules} />
+            </div>
+            <div hidden={mode !== 'viewer'}>
+              <GameViewerView rules={server.rules} active={mode === 'viewer'} />
+            </div>
+          </>
+        )}
         {server.status === 'loading' && <p className="splash">Connecting to the engine&hellip;</p>}
         {server.status === 'error' && (
           <div className="splash">

@@ -4,6 +4,7 @@
 
 import type {
   ApiErrorBody,
+  GameSummary,
   HealthResponse,
   MovesRequest,
   MovesResponse,
@@ -12,6 +13,8 @@ import type {
   PositionRequest,
   PositionSummary,
   Rules,
+  StartGameRequest,
+  StartGameResponse,
   ValidateRequest,
   ValidateResponse,
 } from './types';
@@ -80,4 +83,17 @@ export const api = {
     post<ValidateResponse>('/api/validate', body, signal),
   play: (body: PlayRequest, signal?: AbortSignal) =>
     post<PlayResponse>('/api/play', body, signal),
+  startGame: (body: StartGameRequest) => post<StartGameResponse>('/api/games', body),
+  cancelGame: (id: string) =>
+    request<GameSummary>(`/api/games/${encodeURIComponent(id)}`, { method: 'DELETE' }),
 };
+
+/** Server-Sent Events stream of a game (consumed with EventSource). */
+export function gameEventsUrl(id: string): string {
+  return `/api/games/${encodeURIComponent(id)}/events`;
+}
+
+/** The game record; the server sends it as a download. */
+export function gameGcgUrl(id: string): string {
+  return `/api/games/${encodeURIComponent(id)}/gcg`;
+}

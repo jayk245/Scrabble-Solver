@@ -37,6 +37,7 @@ target_include_directories(scrabble_third_party_json SYSTEM INTERFACE
 
 add_library(scrabble_server_lib
   analysis.cc
+  analyze.cc
   api.cc
   codec.cc
   game_registry.cc

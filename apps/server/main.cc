@@ -13,6 +13,7 @@
 #include <string>
 #include <string_view>
 
+#include "analyze.h"
 #include "api.h"
 #include "game_registry.h"
 #include "games.h"
@@ -66,7 +67,8 @@ int Run(const Options& options) {
   // joined (by the registry's destructor) before it is destroyed.
   scrabble::server::GameRegistry registry;
   scrabble::server::GamesApi games(gaddag, registry);
-  if (!scrabble::server::Serve(api, games, options.http)) {
+  scrabble::server::AnalyzeApi analyze(gaddag);
+  if (!scrabble::server::Serve(api, analyze, games, options.http)) {
     std::fprintf(stderr, "error: cannot listen on %s:%d\n",
                  options.http.host.c_str(), options.http.port);
     return 1;

@@ -131,7 +131,8 @@ void StreamEvents(GamesApi& games, const httplib::Request& req,
 
 }  // namespace
 
-bool Serve(const Api& api, GamesApi& games, const HttpOptions& options) {
+bool Serve(const Api& api, AnalyzeApi& analyze, GamesApi& games,
+           const HttpOptions& options) {
   httplib::Server server;
   server.set_payload_max_length(kMaxRequestBytes);
 
@@ -147,6 +148,10 @@ bool Serve(const Api& api, GamesApi& games, const HttpOptions& options) {
   server.Post("/api/moves", Post(api, &Api::Moves));
   server.Post("/api/validate", Post(api, &Api::Validate));
   server.Post("/api/play", Post(api, &Api::Play));
+  server.Post("/api/analyze",
+              [&analyze](const httplib::Request& req, httplib::Response& res) {
+                Send(res, analyze.Analyze(req.body));
+              });
 
   // Game viewer (see games.h). These handlers only touch the registry and
   // event logs; the engine runs on the registry's worker threads.

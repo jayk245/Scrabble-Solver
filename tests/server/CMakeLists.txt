@@ -1,6 +1,7 @@
 # Socket-free tests for the web server's JSON codec, request handlers, game
-# registry, game streams and human-vs-bot games.
+# registry, game streams, human-vs-bot games and the position solver.
 add_executable(scrabble_server_tests
+  analyze_test.cc
   api_test.cc
   codec_test.cc
   game_registry_test.cc

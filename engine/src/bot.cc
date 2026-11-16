@@ -38,6 +38,7 @@ Bot::Bot(const Gaddag& gaddag, BotConfig config)
 
 Move Bot::ChooseMove(const PlayerView& view, Rng& rng) {
   last_simulation_ = nullptr;
+  last_endgame_.reset();
   if (endgame_ != nullptr && view.bag_size == 0) {
     if (const std::optional<Move> move = SolveEndgame(view)) return *move;
   }
@@ -94,11 +95,11 @@ std::optional<Move> Bot::SolveEndgame(const PlayerView& view) {
   state.scoreless_turns = view.scoreless_turns;
   state.end_rules = view.end_rules;
   endgame_position_.emplace(*view.position);
-  const EndgameResult result =
+  last_endgame_ =
       endgame_->Solve(*endgame_position_, state,
                       {.max_nodes = config_.endgame.node_limit,
                        .max_time_ms = config_.endgame.time_limit_ms});
-  return result.best_move;
+  return last_endgame_->best_move;
 }
 
 void Bot::EvaluateStatic(const PlayerView& view) {

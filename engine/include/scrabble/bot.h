@@ -106,6 +106,12 @@ class Bot {
   // not simulate. Valid until the next ChooseMove().
   const SimulationResult* last_simulation() const { return last_simulation_; }
 
+  // The endgame search behind the last ChooseMove(), or null if that call
+  // did not use the solver. Valid until the next ChooseMove().
+  const EndgameResult* last_endgame() const {
+    return last_endgame_.has_value() ? &*last_endgame_ : nullptr;
+  }
+
   const BotConfig& config() const { return config_; }
 
  private:
@@ -135,6 +141,7 @@ class Bot {
   // the view's board is copied once per decision into endgame_position_.
   std::unique_ptr<EndgameSolver> endgame_;
   std::optional<Position> endgame_position_;
+  std::optional<EndgameResult> last_endgame_;
 };
 
 }  // namespace scrabble

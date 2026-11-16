@@ -454,7 +454,17 @@ TEST_F(EndgameTest, BotPlaysLegalEndgames) {
     while (!game.IsOver()) {
       const PlayerView view = game.ViewForMover();
       const Move move = bot.ChooseMove(view, rng);
-      if (view.bag_size == 0) EXPECT_NE(move.type, MoveType::kExchange);
+      if (view.bag_size == 0) {
+        EXPECT_NE(move.type, MoveType::kExchange);
+        // Every view Game produces has a reconstructible opponent rack, so
+        // the solver decides every empty-bag move and reports its search.
+        const EndgameResult* result = bot.last_endgame();
+        ASSERT_NE(result, nullptr);
+        EXPECT_EQ(result->best_move, move);
+        EXPECT_GE(result->depth, 1);
+      } else {
+        EXPECT_EQ(bot.last_endgame(), nullptr);
+      }
       ASSERT_TRUE(game.Play(move).ok()) << move.ToString();
     }
   }

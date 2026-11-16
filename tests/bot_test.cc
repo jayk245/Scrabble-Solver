@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "scrabble/gcg.h"
+#include "scrabble/leave_evaluator.h"
 #include "scrabble/move_validation.h"
 #include "test_util.h"
 
@@ -25,10 +26,15 @@ BotConfig WithLeaves(LeaveEvaluator leaves) {
   return config;
 }
 
-TEST(BotTest, RejectsUnimplementedStagesAndMissingLeaves) {
+TEST(BotTest, RejectsBadConfigurations) {
   const Gaddag gaddag = Gaddag::Build(std::vector<std::string>{"AB"});
   BotConfig simulation;
   simulation.simulation.enabled = true;
+  EXPECT_NO_THROW(Bot(gaddag, simulation));
+  simulation.simulation.plies = kMaxSimulationPlies + 1;
+  EXPECT_THROW(Bot(gaddag, simulation), std::invalid_argument);
+  simulation.simulation.plies = 2;
+  simulation.simulation.threads = 0;
   EXPECT_THROW(Bot(gaddag, simulation), std::invalid_argument);
   BotConfig endgame;
   endgame.endgame.enabled = true;
@@ -36,6 +42,18 @@ TEST(BotTest, RejectsUnimplementedStagesAndMissingLeaves) {
   BotConfig no_leaves;
   no_leaves.leaves = nullptr;
   EXPECT_THROW(Bot(gaddag, no_leaves), std::invalid_argument);
+}
+
+TEST(BotTest, DefaultsToTheLearnedLeaves) {
+  const BotConfig config;
+  ASSERT_NE(config.leaves, nullptr);
+  EXPECT_EQ(config.leaves, DefaultLeaves());  // one shared table
+  EXPECT_EQ(config.leaves->name(), "learned");
+  EXPECT_EQ(config.leaves->kind(), LeaveEvaluator::Kind::kTable);
+  EXPECT_TRUE(config.leaves->has_model());
+  EXPECT_EQ(config.leaves->size(), 29'163u);
+  EXPECT_FALSE(config.simulation.enabled);
+  EXPECT_FALSE(config.endgame.enabled);
 }
 
 TEST(BotTest, PassesWhenNothingElseIsLegal) {
@@ -116,10 +134,10 @@ TEST_F(EnableBotTest, EquityIsScorePlusLeave) {
   EXPECT_GT(positions, 20);
 }
 
-// Bot-vs-bot games with both leave models: every chosen move is legal on
+// Bot-vs-bot games with two leave models: every chosen move is legal on
 // its own terms (ValidateMove) and accepted by the referee.
 TEST_F(EnableBotTest, AlwaysChoosesALegalMove) {
-  Bot heuristic(*gaddag_, BotConfig{});
+  Bot heuristic(*gaddag_, WithLeaves(LeaveEvaluator::Heuristic()));
   Bot zero(*gaddag_, WithLeaves(LeaveEvaluator::Zero()));
   Rng rng(3);
   for (std::uint64_t seed = 100; seed < 100 + 3 * testing::kScale; ++seed) {

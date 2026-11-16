@@ -3,19 +3,32 @@
 #include <algorithm>
 #include <cassert>
 #include <cstddef>
+#include <numeric>
 #include <optional>
 #include <stdexcept>
 #include <utility>
 
 namespace scrabble {
+namespace {
 
-Bot::Bot(const Gaddag& gaddag, BotConfig config)
-    : config_(std::move(config)), generator_(gaddag) {
-  if (config_.leaves == nullptr) {
+// Validates before the evaluator is bound to the table, so a null table is
+// reported instead of dereferenced.
+const LeaveEvaluator& CheckedLeaves(const BotConfig& config) {
+  if (config.leaves == nullptr) {
     throw std::invalid_argument("BotConfig::leaves must not be null");
   }
+  return *config.leaves;
+}
+
+}  // namespace
+
+Bot::Bot(const Gaddag& gaddag, BotConfig config)
+    : config_(std::move(config)),
+      generator_(gaddag),
+      evaluator_(CheckedLeaves(config_)) {
   if (config_.simulation.enabled) {
-    throw std::invalid_argument("simulation is not implemented yet");
+    simulator_ =
+        std::make_unique<Simulator>(gaddag, config_.leaves, config_.simulation);
   }
   if (config_.endgame.enabled) {
     endgame_ = std::make_unique<EndgameSolver>(
@@ -23,13 +36,21 @@ Bot::Bot(const Gaddag& gaddag, BotConfig config)
   }
 }
 
-Move Bot::ChooseMove(const PlayerView& view, Rng& /*rng*/) {
+Move Bot::ChooseMove(const PlayerView& view, Rng& rng) {
+  last_simulation_ = nullptr;
   if (endgame_ != nullptr && view.bag_size == 0) {
     if (const std::optional<Move> move = SolveEndgame(view)) return *move;
   }
   EvaluateStatic(view);
   // Never empty: the pass is always generated.
   assert(!moves_.empty());
+  // With an empty bag rollouts would be deterministic and shallow, so the
+  // static rule (or the endgame stage above) decides instead.
+  if (simulator_ != nullptr && view.bag_size > 0 && CanSimulate(view)) {
+    SelectCandidates();
+    last_simulation_ = &simulator_->Run(view, candidates_, rng());
+    return last_simulation_->best_move;
+  }
   // max_element keeps the first of equal elements, which makes ties
   // resolve by generation order.
   return *std::max_element(
@@ -85,59 +106,45 @@ void Bot::EvaluateStatic(const PlayerView& view) {
   generator_.Generate(*view.position, view.rack, moves_,
                       {.include_exchanges = view.CanExchange(),
                        .include_pass = true});
-  PrepareLeaves(view);
-  for (Move& move : moves_) move.equity = move.score + LeaveTerm(move);
-}
-
-void Bot::PrepareLeaves(const PlayerView& view) {
-  const Rack& rack = view.rack;
-  int combinations = 1;
-  for (Letter letter = 0; letter < kAlphabetSize; ++letter) {
-    const int count = rack.Count(letter);
-    leave_stride_[letter] = count > 0 ? combinations : 0;
-    combinations *= count + 1;
-  }
-  assert(combinations <= kMaxLeaves);
-  full_rack_index_ = combinations - 1;
-
   int unseen_value = 0;
   for (Letter letter = 0; letter < kAlphabetSize; ++letter) {
     unseen_value += view.unseen[letter] * kTileValues[letter];
   }
-  const bool bag_empty = view.bag_size == 0;
-
-  for (int index = 0; index < combinations; ++index) {
-    Rack leave;
-    for (Letter letter = 0; letter < kAlphabetSize; ++letter) {
-      const int stride = leave_stride_[letter];
-      if (stride == 0) continue;
-      const int keep = (index / stride) % (rack.Count(letter) + 1);
-      for (int n = 0; n < keep; ++n) leave.Add(letter);
-    }
-    double value;
-    if (!bag_empty) {
-      value = config_.leaves->Value(leave);
-    } else if (leave.IsEmpty()) {
-      value = 2.0 * unseen_value;
-    } else {
-      value = -2.0 * leave.Score();
-    }
-    leave_values_[static_cast<std::size_t>(index)] = value;
-  }
+  // With the bag empty the unseen tiles are the opponent's rack.
+  evaluator_.Prepare(view.rack, view.bag_size == 0, unseen_value);
+  for (Move& move : moves_) move.equity = evaluator_.Equity(move);
 }
 
-double Bot::LeaveTerm(const Move& move) const {
-  int index = full_rack_index_;
-  for (std::size_t i = 0; i < move.num_tiles; ++i) {
-    const MoveTile tile = move.tiles[i];
-    if (move.type == MoveType::kPlace) {
-      if (tile.is_play_through()) continue;
-      index -= leave_stride_[tile.is_blank() ? kBlank : tile.letter()];
-    } else {
-      index -= leave_stride_[tile.letter()];
-    }
+void Bot::SelectCandidates() {
+  const std::size_t keep = std::min(
+      moves_.size(),
+      static_cast<std::size_t>(config_.simulation.candidates));
+  order_.resize(moves_.size());
+  std::iota(order_.begin(), order_.end(), std::size_t{0});
+  // Index as the tie-break makes the selection independent of the sort
+  // algorithm, and so deterministic.
+  std::partial_sort(
+      order_.begin(), order_.begin() + static_cast<std::ptrdiff_t>(keep),
+      order_.end(), [this](std::size_t a, std::size_t b) {
+        if (moves_[a].equity != moves_[b].equity) {
+          return moves_[a].equity > moves_[b].equity;
+        }
+        return a < b;
+      });
+  candidates_.clear();
+  for (std::size_t i = 0; i < keep; ++i) {
+    candidates_.push_back(moves_[order_[i]]);
   }
-  return leave_values_[static_cast<std::size_t>(index)];
+  // Static equity can undervalue a big score (its leave may be judged too
+  // harshly), so the top scorer always gets a chance in simulation.
+  std::size_t top_scorer = 0;
+  for (std::size_t i = 1; i < moves_.size(); ++i) {
+    if (moves_[i].score > moves_[top_scorer].score) top_scorer = i;
+  }
+  const bool included =
+      std::find(order_.begin(), order_.begin() + static_cast<std::ptrdiff_t>(keep),
+                top_scorer) != order_.begin() + static_cast<std::ptrdiff_t>(keep);
+  if (!included) candidates_.push_back(moves_[top_scorer]);
 }
 
 }  // namespace scrabble

@@ -6,23 +6,18 @@
 //
 //   1. Generate every legal move, including exchanges (when the bag allows)
 //      and the pass.
-//   2. Static evaluation: equity = score + leave value, from the configured
-//      LeaveEvaluator (heuristic now, learned values from M6). Once the bag
-//      is empty nothing more is drawn, so leave values no longer apply and
-//      the leave term becomes the end-of-game rack swing instead: +2x the
-//      opponent's rack value for going out, otherwise -2x the face value of
-//      the tiles kept (the opponent will likely go out next). The 2x holds
-//      for both EndRules, since they differ only in who carries the swing.
-//      This rule is only a fallback for when the endgame stage is off.
-//   3. Simulation (M7, BotConfig::simulation): re-rank the top static
-//      candidates by Monte Carlo playouts against racks sampled from the
-//      unseen tiles.
+//   2. Static evaluation: equity = score + leave term (StaticEvaluator,
+//      static_evaluator.h), with leave values from the configured
+//      LeaveEvaluator; by default the learned table (DefaultLeaves()). Once
+//      the bag is empty the leave term becomes the end-of-game rack swing.
+//      With the later stages off, the best static move is played.
+//   3. Simulation (BotConfig::simulation, simulation.h): while the bag has
+//      tiles, re-rank the top static candidates (plus the highest-scoring
+//      move) by Monte Carlo rollouts against futures sampled from the
+//      unseen tiles, and play the best mean.
 //   4. Endgame (BotConfig::endgame): with the bag empty the opponent's rack
 //      is exactly PlayerView::unseen, and ChooseMove() plays the move an
 //      EndgameSolver search finds best instead.
-//
-// Stage 3 is a configuration hook only; enabling it before it exists is
-// rejected at construction rather than silently ignored.
 
 #ifndef SCRABBLE_BOT_H_
 #define SCRABBLE_BOT_H_
@@ -44,20 +39,10 @@
 #include "scrabble/position.h"
 #include "scrabble/rack.h"
 #include "scrabble/rng.h"
+#include "scrabble/simulation.h"
+#include "scrabble/static_evaluator.h"
 
 namespace scrabble {
-
-// Monte Carlo simulation of the top static candidates (milestone 7). Each
-// iteration samples an opponent rack and future draws from
-// PlayerView::unseen, plays `plies` further moves with the static
-// evaluator, and scores the candidate by its average resulting spread plus
-// the final leave. Not yet implemented: `enabled` must be false.
-struct SimulationConfig {
-  bool enabled = false;
-  int candidates = 10;    // top static moves to simulate
-  int iterations = 1000;  // playouts per candidate (upper bound)
-  int plies = 2;          // moves played after the candidate
-};
 
 // Endgame search once the bag is empty (see endgame.h). Both racks are
 // known then, so the remaining game is searched exactly when the limits
@@ -75,28 +60,33 @@ struct BotConfig {
   // Label used in logs, GCG files and reports.
   std::string name = "bot";
   // Shared so many bots (e.g. one per arena thread) can read one loaded
-  // table. Must not be null.
-  std::shared_ptr<const LeaveEvaluator> leaves =
-      std::make_shared<const LeaveEvaluator>(LeaveEvaluator::Heuristic());
+  // table. Must not be null. Defaults to the learned table.
+  std::shared_ptr<const LeaveEvaluator> leaves = DefaultLeaves();
   SimulationConfig simulation;
   EndgameConfig endgame;
 };
 
-// Holds move-generation scratch buffers (and, with the endgame stage on, a
-// transposition table), so a Bot is used by one thread at a time; give each
-// thread its own. Outside the endgame, ChooseMove() performs no heap
-// allocation once its buffers have grown to the largest move list seen.
+// Holds move-generation scratch buffers (and, with the later stages on,
+// simulation workers and a transposition table), so a Bot is used by one
+// thread at a time; give each thread its own. With only the static stage,
+// ChooseMove() performs no heap allocation once its buffers have grown to
+// the largest move list seen.
 class Bot {
  public:
   // `gaddag` must outlive the bot. Throws std::invalid_argument if `config`
-  // has no leave evaluator or enables a stage that is not implemented.
+  // has no leave evaluator or an out-of-range simulation configuration.
   Bot(const Gaddag& gaddag, BotConfig config);
 
   // Returns the best move for the player described by `view`, with
   // `equity` set. Always legal for the view's rack and board, and never an
   // exchange unless view.CanExchange(). Ties go to the first move in
-  // generation order, so the result is deterministic. `rng` is reserved for
-  // simulation and currently unused.
+  // generation order, so the result is deterministic.
+  //
+  // With the simulation stage on and tiles in the bag, the move is the
+  // simulation's choice and `equity` its mean rollout value; one draw from
+  // `rng` seeds the decision, so equal rng states give equal moves for any
+  // simulation thread count (unless a time limit is set). The view must
+  // satisfy CanSimulate(), or the static choice is played.
   //
   // With the endgame stage on and the bag empty, the move is the solver's
   // and `equity` is its value: the expected final spread for this player.
@@ -112,32 +102,34 @@ class Bot {
   void RankMoves(const PlayerView& view, std::size_t max_moves,
                  std::vector<Move>& out);
 
+  // The simulation behind the last ChooseMove(), or null if that call did
+  // not simulate. Valid until the next ChooseMove().
+  const SimulationResult* last_simulation() const { return last_simulation_; }
+
   const BotConfig& config() const { return config_; }
 
  private:
-  // Maps every sub-multiset of the current rack to a dense index so leave
-  // values are computed once per distinct leave per turn, not once per
-  // move. With per-letter counts c[l], letter l gets stride
-  // prod(c[k] + 1 for distinct letters k before l), and a leave keeping
-  // n[l] copies has index sum(n[l] * stride[l]). A 7-tile rack has at most
-  // 2^7 = 128 sub-multisets (seven distinct tiles).
-  static constexpr int kMaxLeaves = 1 << kRackSize;
-
   // The solver's move for an empty-bag view, or nullopt if the opponent's
   // rack cannot be reconstructed from the view.
   std::optional<Move> SolveEndgame(const PlayerView& view);
 
   // Fills moves_ with every legal move and its static equity.
   void EvaluateStatic(const PlayerView& view);
-  void PrepareLeaves(const PlayerView& view);
-  double LeaveTerm(const Move& move) const;
+  // Fills candidates_ from moves_ (after EvaluateStatic()): the top
+  // config_.simulation.candidates by equity, ties in generation order, plus
+  // the highest-scoring move if it is not among them.
+  void SelectCandidates();
 
   BotConfig config_;
   MoveGenerator generator_;
+  StaticEvaluator evaluator_;
   std::vector<Move> moves_;
-  std::array<int, kAlphabetSize> leave_stride_{};
-  int full_rack_index_ = 0;
-  std::array<double, kMaxLeaves> leave_values_{};
+
+  // Simulation stage; null when disabled.
+  std::unique_ptr<Simulator> simulator_;
+  std::vector<std::size_t> order_;
+  std::vector<Move> candidates_;
+  const SimulationResult* last_simulation_ = nullptr;  // owned by simulator_
 
   // Endgame stage; null when disabled. The solver mutates a Position, so
   // the view's board is copied once per decision into endgame_position_.

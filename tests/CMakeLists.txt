@@ -30,6 +30,7 @@ add_executable(scrabble_tests
   endgame_test.cc
   arena_test.cc
   learned_leaves_test.cc
+  simulation_test.cc
   test_util.cc)
 target_link_libraries(scrabble_tests PRIVATE scrabble::engine GTest::gtest_main)
 # Integration tests read fetched word lists and learned leave tables from

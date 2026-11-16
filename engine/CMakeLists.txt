@@ -36,7 +36,9 @@ add_library(scrabble_engine
   src/move_validation.cc
   src/position.cc
   src/rack.cc
-  src/scoring.cc)
+  src/scoring.cc
+  src/simulation.cc
+  src/static_evaluator.cc)
 add_library(scrabble::engine ALIAS scrabble_engine)
 
 target_include_directories(scrabble_engine PUBLIC

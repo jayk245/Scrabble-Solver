@@ -16,6 +16,7 @@
 #include "scrabble/bot.h"
 #include "scrabble/game.h"
 #include "scrabble/move.h"
+#include "scrabble/move_validation.h"
 #include "scrabble/position.h"
 #include "scrabble/rack.h"
 #include "scrabble/rng.h"
@@ -138,9 +139,82 @@ BotConfig ConfigFor(const Budget& budget, Effort effort) {
   return config;
 }
 
+// The requested "played" move, canonicalised by the validator, or the
+// reason it is not legal for this board and rack.
+struct PlayedMove {
+  std::optional<Move> move;
+  std::string error;
+};
+
+std::optional<PlayedMove> PlayedField(const Json& request, const Board& board,
+                                      const Gaddag& gaddag, const Rack& rack) {
+  const Json* value = Field(request, "played");
+  if (value == nullptr) return std::nullopt;
+  if (!value->is_string()) BadSetting("played", "a move in notation");
+  Move move = MoveFromNotation(value->get_ref<const std::string&>());
+  const MoveError error = ValidateMove(board, gaddag, rack, move);
+  if (error != MoveError::kOk) {
+    return PlayedMove{std::nullopt, std::string(MoveErrorMessage(error))};
+  }
+  return PlayedMove{move, {}};
+}
+
+// The played move as a candidate: its static rank and equity and, if it
+// was simulated, its rollout statistics.
+Json PlayedJson(const Move& played, const Move& best,
+                const std::vector<Move>& ranked, const Rack& rack,
+                const SimulationResult* simulation) {
+  // The ranked copy carries the static equity; ties share a rank, so the
+  // copy is found by identity rather than at the rank's index.
+  const auto evaluated = std::find_if(
+      ranked.begin(), ranked.end(),
+      [&played](const Move& move) { return SameMove(move, played); });
+  const bool found = evaluated != ranked.end();
+  Json candidate = StaticCandidateJson(found ? *evaluated : played, rack,
+                                       RankOf(ranked, played),
+                                       SameMove(played, best));
+  if (!found) candidate["equity"] = nullptr;
+  if (simulation == nullptr) return candidate;
+  for (const CandidateStats& stats : simulation->candidates) {
+    if (!SameMove(stats.move, played)) continue;
+    candidate["sim"] = {{"mean", Round2(stats.mean)},
+                        {"stdError", Round2(stats.std_error)},
+                        {"stddev", Round2(stats.stddev)},
+                        {"iterations", stats.iterations},
+                        {"pruned", stats.pruned},
+                        {"diffFromBest", Round2(stats.diff_from_best)},
+                        {"diffStdError", Round2(stats.diff_std_error)}};
+  }
+  return candidate;
+}
+
+// Waits for the search slot for up to kAnalyzeQueueMs, giving up early if
+// the client disconnects. Returns the error to send, or nullopt once
+// `lock` holds the slot.
+std::optional<ApiResponse> AcquireSearch(
+    std::unique_lock<std::timed_mutex>& lock,
+    const std::function<bool()>& cancelled) {
+  const auto deadline = std::chrono::steady_clock::now() +
+                        std::chrono::milliseconds(kAnalyzeQueueMs);
+  const auto is_cancelled = [&cancelled] { return cancelled && cancelled(); };
+  while (!lock.try_lock_for(std::chrono::milliseconds(kAnalyzeQueuePollMs))) {
+    if (is_cancelled()) break;
+    if (std::chrono::steady_clock::now() >= deadline) {
+      return ErrorResponse(503, "busy",
+                           "the engine is busy with another analysis; try "
+                           "again shortly");
+    }
+  }
+  if (is_cancelled()) {
+    return ErrorResponse(499, "cancelled", "the client went away");
+  }
+  return std::nullopt;
+}
+
 }  // namespace
 
-ApiResponse AnalyzeApi::Analyze(std::string_view body) {
+ApiResponse AnalyzeApi::Analyze(std::string_view body,
+                                const std::function<bool()>& cancelled) {
   return GuardedResponse([&]() -> ApiResponse {
     const auto start = std::chrono::steady_clock::now();
     const Json request = ParseRequestObject(body);
@@ -216,17 +290,19 @@ ApiResponse AnalyzeApi::Analyze(std::string_view body) {
 
     const Position position(*gaddag_, board);
     view.position = &position;
+    const std::optional<PlayedMove> played =
+        PlayedField(request, board, *gaddag_, *rack);
 
     // Static analysis is cheap; anything that searches runs alone.
     std::unique_lock<std::timed_mutex> lock(search_, std::defer_lock);
-    if (effort != Effort::kStatic &&
-        !lock.try_lock_for(std::chrono::milliseconds(kAnalyzeQueueMs))) {
-      return ErrorResponse(503, "busy",
-                           "the engine is busy with another analysis; try "
-                           "again shortly");
+    if (effort != Effort::kStatic) {
+      if (std::optional<ApiResponse> refused = AcquireSearch(lock, cancelled)) {
+        return *std::move(refused);
+      }
     }
 
     Bot bot(*gaddag_, ConfigFor(budget, effort));
+    if (played && played->move) bot.set_extra_candidates({*played->move});
     Rng rng(seed);
     Move best = bot.ChooseMove(view, rng);
     std::vector<Move> ranked;
@@ -240,6 +316,15 @@ ApiResponse AnalyzeApi::Analyze(std::string_view body) {
         AnalysisJson(ranked, view.rack, best, limit, bot.last_simulation(),
                      budget.plies, bot.last_endgame());
 
+    if (played) {
+      if (played->move) {
+        response["played"] = PlayedJson(*played->move, best, ranked, view.rack,
+                                        bot.last_simulation());
+      } else {
+        response["played"] = nullptr;
+        response["playedError"] = played->error;
+      }
+    }
     response["effort"] = EffortName(effort);
     response["position"] = {{"unseen", TileCountsToJson(unseen.counts)},
                             {"unseenCount", unseen.total},

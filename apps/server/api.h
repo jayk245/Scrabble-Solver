@@ -23,7 +23,9 @@
 //   POST /api/analyze    the best move for a two-player position: ranked
 //                        candidates with static equity, Monte Carlo
 //                        statistics, or the exact endgame once the bag is
-//                        empty
+//                        empty; optionally also evaluates a named "played"
+//                        move (game review). A queued request whose client
+//                        disconnects is dropped before it searches.
 //
 // Games (GamesApi in games.h; the only stateful endpoints, backed by the
 // in-memory GameRegistry in game_registry.h):
@@ -47,6 +49,10 @@
 //                                  is the bot's turn or the game is over
 //   GET    /api/games/{id}/hint    human games: the engine's top static
 //                                  moves for the human's rack
+//   POST   /api/gcg                a GCG record replayed without starting
+//                                  a game: {"start", "moves", "end"}, the
+//                                  events a "replay" stream would carry
+//                                  (the solver's import)
 
 #ifndef SCRABBLE_SERVER_API_H_
 #define SCRABBLE_SERVER_API_H_

@@ -22,12 +22,15 @@
 // endgame budgets with wall-clock limits of at most kMaxAnalyzeMs, each
 // request uses up to kAnalyzeThreads threads, and requests that search
 // (anything but effort "static") run one at a time; a request that cannot
-// start within kAnalyzeQueueMs gets 503 "busy".
+// start within kAnalyzeQueueMs gets 503 "busy". A queued request whose
+// client has gone away (it navigated elsewhere and aborted the fetch) is
+// dropped before it searches, so stale work never delays the next one.
 
 #ifndef SCRABBLE_SERVER_ANALYZE_H_
 #define SCRABBLE_SERVER_ANALYZE_H_
 
 #include <cstdint>
+#include <functional>
 #include <mutex>
 #include <string_view>
 
@@ -44,6 +47,8 @@ inline constexpr int kMaxAnalyzeIterations = 2000;
 inline constexpr int kMaxAnalyzePlies = 4;
 inline constexpr int kDefaultStaticCandidates = 10;
 inline constexpr int kMaxStaticCandidates = 30;
+// How often a queued request checks whether its client is still waiting.
+inline constexpr std::int64_t kAnalyzeQueuePollMs = 50;
 
 // Handler for POST /api/analyze. Thread-safe.
 class AnalyzeApi {
@@ -59,21 +64,31 @@ class AnalyzeApi {
   //    "effort": "static" | "quick" | "normal" | "deep",
   //    "simulation": {"candidates", "iterations", "plies", "timeLimitMs"},
   //    "endgame": {"timeLimitMs", "nodeLimit"},
-  //    "limit": 10, "seed": 1}
+  //    "limit": 10, "seed": 1, "played": "8D RETAINS"}
   //
   // "simulation" and "endgame" override the preset's budget within the
-  // caps above. Response: a MoveAnalysis (analysis.h) whose "chosen"
-  // candidate is the engine's move, plus
+  // caps above. "played" names a move to evaluate alongside the engine's
+  // (for a game review: the move that was actually made); it is always
+  // simulated when the search simulates. Response: a MoveAnalysis
+  // (analysis.h) whose "chosen" candidate is the engine's move, plus
   //
   //   "effort", "elapsedMs",
   //   "position": {"unseen", "unseenCount", "bagCount", "opponentRackSize",
-  //                "opponentRackKnown", "tilesOnBoard"}
+  //                "opponentRackKnown", "tilesOnBoard"},
+  //   "played": a candidate ({"move", "equity", "staticRank", "chosen",
+  //             "sim"?}) for the requested move, or null with
+  //             "playedError" naming why it is not legal here
+  //
+  // `cancelled`, if set, reports whether the client has disconnected; it is
+  // polled while the request waits for the search slot, and a cancelled
+  // request returns 499 "cancelled" without searching.
   //
   // Errors: 400 for malformed fields, 422 "impossible_position" for tile
   // counts the distribution cannot supply or an opponent rack that does
   // not fit the bag, 422 "game_over" when the opponent has no tiles left,
   // 503 "busy" when another search is running too long.
-  ApiResponse Analyze(std::string_view body);
+  ApiResponse Analyze(std::string_view body,
+                      const std::function<bool()>& cancelled = {});
 
  private:
   const Gaddag* gaddag_;

@@ -148,6 +148,67 @@ TEST_F(AnalyzeTest, SimulatesCandidatesWithAKnownOpponentRack) {
   EXPECT_EQ(body["candidates"][0]["chosen"], true);
 }
 
+// "played" evaluates a move the engine would not choose: statically it gets
+// its rank and equity, and in a simulation it is always among the
+// simulated candidates, so a review can measure what it gave up.
+TEST_F(AnalyzeTest, EvaluatesThePlayedMove) {
+  const Json board = BoardWith({"", "", "", "", "", "", "", ".......CAT"});
+  const ApiResponse ranked = Analyze({{"board", board},
+                                      {"rack", "QUIZERS"},
+                                      {"effort", "static"},
+                                      {"limit", 30},
+                                      {"played", "I6 QU(A)I"}});
+  ASSERT_EQ(ranked.status, 200) << ranked.body.dump();
+  const Json& played = ranked.body["played"];
+  ASSERT_TRUE(played.is_object()) << ranked.body.dump();
+  EXPECT_EQ(played["move"]["notation"], "I6 QU(A)I");
+  EXPECT_EQ(played["chosen"], false);
+  EXPECT_GT(played["staticRank"].get<int>(), 1);
+  EXPECT_LT(played["equity"].get<double>(),
+            ranked.body["candidates"][0]["equity"].get<double>());
+  EXPECT_FALSE(played.contains("sim"));
+
+  const ApiResponse simulated =
+      Analyze({{"board", board},
+               {"rack", "QUIZERS"},
+               {"effort", "quick"},
+               {"simulation", {{"candidates", 2}, {"iterations", 16},
+                               {"plies", 1}}},
+               {"played", "I6 QU(A)I"}});
+  ASSERT_EQ(simulated.status, 200) << simulated.body.dump();
+  EXPECT_EQ(simulated.body["method"], "simulation");
+  ASSERT_TRUE(simulated.body["played"].contains("sim"))
+      << simulated.body.dump();
+  bool listed = false;
+  for (const Json& candidate : simulated.body["candidates"]) {
+    listed = listed || candidate["move"]["notation"] == "I6 QU(A)I";
+  }
+  EXPECT_TRUE(listed);
+
+  // A move the rack cannot make is reported rather than refused.
+  const ApiResponse illegal = Analyze({{"board", board},
+                                       {"rack", "QUIZERS"},
+                                       {"effort", "static"},
+                                       {"played", "8A XYST"}});
+  ASSERT_EQ(illegal.status, 200) << illegal.body.dump();
+  EXPECT_TRUE(illegal.body["played"].is_null());
+  EXPECT_FALSE(illegal.body["playedError"].get<std::string>().empty());
+  EXPECT_EQ(ErrorOf({{"rack", "AB"}, {"played", 7}}), "bad_settings");
+}
+
+// A client that has gone away is not searched for; static answers need no
+// search slot and are unaffected.
+TEST_F(AnalyzeTest, SkipsCancelledSearches) {
+  const auto gone = [] { return true; };
+  const ApiResponse skipped = api_->Analyze(
+      Json{{"rack", "AEINRST"}, {"effort", "quick"}}.dump(), gone);
+  EXPECT_EQ(skipped.status, 499);
+  EXPECT_EQ(skipped.body["error"], "cancelled");
+  const ApiResponse quick = api_->Analyze(
+      Json{{"rack", "AEINRST"}, {"effort", "static"}}.dump(), gone);
+  EXPECT_EQ(quick.status, 200) << quick.body.dump();
+}
+
 // With the bag empty the opponent's rack is the unseen tiles, so the
 // endgame solver answers, whether or not the client names that rack.
 TEST_F(AnalyzeTest, SolvesEmptyBagPositionsWithTheEndgameSolver) {

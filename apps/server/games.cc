@@ -521,6 +521,20 @@ class Replayer {
   std::vector<GameEvent> events_;
 };
 
+// The "gcg" field of a replay or parse request, size-checked.
+const std::string& GcgField(const Json& request) {
+  const Json* gcg = Field(request, "gcg");
+  if (gcg == nullptr || !gcg->is_string()) {
+    throw ApiError(400, "missing_field",
+                   "\"gcg\" is required and must be the record's text");
+  }
+  const auto& text = gcg->get_ref<const std::string&>();
+  if (text.size() > kMaxGcgBytes) {
+    throw ApiError(413, "gcg_too_large", "the GCG record is too large");
+  }
+  return text;
+}
+
 std::uint64_t RandomSeed() {
   std::random_device device;
   const std::uint64_t seed =
@@ -617,6 +631,22 @@ std::vector<GameEvent> ReplayEvents(const Gaddag& gaddag,
   return Replayer(gaddag, gcg, std::move(record)).Run();
 }
 
+ApiResponse GamesApi::ParseRecord(std::string_view body) const {
+  return GuardedResponse([&]() -> ApiResponse {
+    const Json request = ParseRequestObject(body);
+    std::vector<GameEvent> events = ReplayEvents(*gaddag_, GcgField(request));
+    Json response = {{"moves", Json::array()}};
+    for (GameEvent& event : events) {
+      if (event.type == "move") {
+        response["moves"].push_back(std::move(event.data));
+      } else {
+        response[event.type] = std::move(event.data);
+      }
+    }
+    return ApiResponse{200, std::move(response)};
+  });
+}
+
 ApiResponse GamesApi::Start(std::string_view body) {
   static const std::string kModes =
       "\"selfplay\", \"replay\" or \"human\"";
@@ -642,15 +672,7 @@ ApiResponse GamesApi::Start(std::string_view body) {
     } else if (mode == "human") {
       return humans_.Start(request, RandomSeed());
     } else if (mode == "replay") {
-      const Json* gcg = Field(request, "gcg");
-      if (gcg == nullptr || !gcg->is_string()) {
-        throw ApiError(400, "missing_field",
-                       "\"gcg\" is required and must be the record's text");
-      }
-      const auto& text = gcg->get_ref<const std::string&>();
-      if (text.size() > kMaxGcgBytes) {
-        throw ApiError(413, "gcg_too_large", "the GCG record is too large");
-      }
+      const std::string& text = GcgField(request);
       std::vector<GameEvent> events = ReplayEvents(*gaddag_, text);
       session = registry_->AddCompleted(mode, [&](GameSession& game) {
         for (GameEvent& event : events) {

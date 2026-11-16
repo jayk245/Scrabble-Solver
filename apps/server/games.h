@@ -135,6 +135,12 @@ class GamesApi {
   // human_game.h). 201 with {"id", "mode", "events"} (the events URL);
   // 503 "too_many_games" when the server is busy.
   ApiResponse Start(std::string_view body);
+  // POST /api/gcg: {"gcg": "..."} parsed and replayed without registering
+  // a game, for clients that load a record into their own editor (the
+  // solver's import). 200 with the replay's events grouped by type:
+  // {"start": {...}, "moves": [...], "end": {...}}, the same objects the
+  // event stream would carry; errors as for a "replay" game.
+  ApiResponse ParseRecord(std::string_view body) const;
   // GET /api/games/{id}: the session summary.
   ApiResponse Status(std::string_view id);
   // DELETE /api/games/{id}: cancels a running game (or ends a human game).

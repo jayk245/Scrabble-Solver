@@ -150,7 +150,11 @@ bool Serve(const Api& api, AnalyzeApi& analyze, GamesApi& games,
   server.Post("/api/play", Post(api, &Api::Play));
   server.Post("/api/analyze",
               [&analyze](const httplib::Request& req, httplib::Response& res) {
-                Send(res, analyze.Analyze(req.body));
+                // A client that aborts (it moved to another position) closes
+                // the connection, so a queued search can be skipped.
+                Send(res, analyze.Analyze(req.body, [&req] {
+                  return req.is_connection_closed();
+                }));
               });
 
   // Game viewer (see games.h). These handlers only touch the registry and
@@ -182,6 +186,10 @@ bool Serve(const Api& api, AnalyzeApi& analyze, GamesApi& games,
                               "attachment; filename=\"game-" + id + ".gcg\"");
                res.set_content(gcg, "text/plain; charset=utf-8");
              });
+  server.Post("/api/gcg",
+              [&games](const httplib::Request& req, httplib::Response& res) {
+                Send(res, games.ParseRecord(req.body));
+              });
   // Human-vs-bot games (human_game.h).
   server.Post(R"(/api/games/([0-9a-f]+)/moves)",
               [&games](const httplib::Request& req, httplib::Response& res) {

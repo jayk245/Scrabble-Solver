@@ -366,5 +366,27 @@ TEST(ReplayTest, AnnotatesRecordsFromOtherSources) {
   EXPECT_EQ(end["gcg"], gcg);
 }
 
+// POST /api/gcg returns the replay's events without registering a game.
+TEST(GamesApiTest, ParsesRecordsWithoutStartingAGame) {
+  GameRegistry registry({.max_running = 0});
+  GamesApi games(Tiny(), registry);
+  const std::string gcg =
+      "#player1 a A\n#player2 b B\n>a: AB 8H AB +8 8\n>b: AB - +0 0\n";
+  const ApiResponse parsed = games.ParseRecord(Json{{"gcg", gcg}}.dump());
+  ASSERT_EQ(parsed.status, 200) << parsed.body.dump();
+  EXPECT_EQ(parsed.body["start"]["players"][0]["name"], "a");
+  EXPECT_EQ(parsed.body["start"]["racks"][0], "AB");
+  ASSERT_EQ(parsed.body["moves"].size(), 2u);
+  EXPECT_EQ(parsed.body["moves"][0]["move"]["notation"], "8H AB");
+  EXPECT_EQ(parsed.body["moves"][1]["player"], 1);
+  EXPECT_EQ(parsed.body["end"]["scores"], Json::array({8, 0}));
+
+  EXPECT_EQ(games.ParseRecord("{}").body["error"], "missing_field");
+  EXPECT_EQ(games.ParseRecord(R"({"gcg": "hello"})").body["error"], "bad_gcg");
+  const ApiResponse illegal =
+      games.ParseRecord(Json{{"gcg", ">a: AB 8A AB +4 4\n"}}.dump());
+  EXPECT_EQ(illegal.status, 422);
+}
+
 }  // namespace
 }  // namespace scrabble::server

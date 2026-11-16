@@ -89,14 +89,14 @@ printed checksum must stay fixed for a given seed across optimisations.
 
 ```sh
 ./build/release/apps/scrabble_arena --games 2000 --threads 8 --seed 1 \
-    --leaves-a heuristic --leaves-b zero
+    --leaves-a learned --leaves-b heuristic
 ```
 
 Plays bot configuration A against B (alternating who moves first) and
 reports A's win/loss/tie record, mean scores and spread with 95% confidence
 intervals, bingos per game and games/sec. Results depend only on `--seed`,
-never on `--threads`. Leaves are `heuristic` (default), `zero` or a
-`leave,value` CSV file. `--rules naspa|wespa` selects end-of-game scoring,
+never on `--threads`. Leaves are `learned` (default: the learned table
+built into the engine), `heuristic`, `zero` or a `leave,value` CSV file. `--rules naspa|wespa` selects end-of-game scoring,
 `--gcg-dir DIR` writes every game as GCG, and `--log FILE` writes a JSONL
 move log (schema in `engine/include/scrabble/arena.h`) for leave training.
 
@@ -138,7 +138,14 @@ Outputs:
 * `data/leaves/enable_leaves.csv` (12 MB, gitignored): every leave of 1-6
   tiles.
 
-Use either with `--leaves-a FILE`. Python tests:
+The default table is compiled into the engine: CMake converts the CSV
+into a byte array at build time (`cmake/EmbedFile.cmake`, rerun whenever
+the CSV changes), and `LeaveEvaluator::Learned()` parses it. Every bot
+uses it unless told otherwise (`BotConfig::leaves` defaults to
+`DefaultLeaves()`, one shared instance), so binaries do not depend on
+where they run from or on a data path. Use either table file with
+`--leaves-a FILE`, or `--leaves-a heuristic` for the old baseline. Python
+tests:
 `python3 -m unittest discover -s tools/leaves`.
 
 Arena results, 10,000 games each (seed 1999, 95% CIs):
@@ -224,6 +231,122 @@ bot, endgame on (A, 200,000 nodes per move) against endgame off (B):
 
 Intervals are 95%. Time per game is thread-seconds.
 
+## Monte Carlo simulation
+
+Static equity judges a move by its score and the leave it keeps.
+Simulation plays the best few candidates forward against sampled futures
+and averages what happens. That shows up board effects a leave table
+cannot see: openings handed to the opponent, hooks, and setups for the
+next turn. `Simulator` (`engine/include/scrabble/simulation.h`) does this
+for the bot while the bag still has tiles:
+
+- **Candidates.** The top N moves by static equity (`candidates`,
+  default 15), ties in generation order, plus the highest-scoring move if
+  it is not among them.
+- **One iteration.** Shuffle the unseen tiles (bag plus the opponent's
+  rack). The tail becomes the opponent's rack, so it is a uniform sample,
+  and the rest is the bag in draw order. For each candidate: play it,
+  draw replacements, then play `plies` more moves (default 2: the reply,
+  then our next move). Each of those moves is the mover's best static
+  move from their actual rack. Value = our points minus theirs over the
+  candidate and the simulated plies, plus the leave term of our last move,
+  minus the leave term of theirs. Both last leaves are still unplayed, so
+  both are counted. Leaving out theirs would favour candidates that give
+  the opponent a modest score but a strong leave. With `plies = 0` the
+  value is exactly the static equity.
+- **Common random numbers.** Every candidate in an iteration sees the
+  same opponent rack and bag order, so the luck of the draw cancels when
+  candidates are compared. Exchanged tiles go back into a random position
+  in the bag.
+- **Pruning.** Iterations run in rounds of 16. After `min_iterations`
+  (default 64), a candidate is dropped once the leader beats it by more
+  than `prune_z` (default 2) standard errors of their *paired* difference.
+  The run stops when one candidate is left, `iterations` (default 1,000)
+  are spent, or `time_limit_ms` passes.
+- **End of the bag.** A rollout keeps going after its bag runs out, and
+  plays its remaining plies with the static empty-bag rule. If a player
+  goes out, or six turns in a row score nothing, the real end-of-game
+  adjustment replaces the leave terms. This is crude, but it keeps every
+  rollout the same length. Stopping a rollout when the bag empties would
+  score bag-emptying candidates without the opponent's reply, and so
+  favour them. Once the real bag is empty, the endgame solver takes over.
+- **Determinism and threads.** Iteration *i* is seeded from (decision
+  seed, *i*) alone. Work items (iteration × candidate) are spread over a
+  thread pool. After each round, a `std::barrier` completion step adds up
+  the values in a fixed order. So results are bit-identical for any
+  thread count, unless a time limit is set.
+- **No per-rollout allocation.** Each thread has its own Position (one
+  copy per decision, then only `Apply`/`Undo`), MoveGenerator, move
+  buffer and StaticEvaluator.
+
+`Run()` returns a `SimulationResult`. For each candidate it holds the
+iteration count, mean, standard deviation, standard error and the paired
+difference from the chosen move (with its standard error), plus totals,
+time and the stop reason. `Bot::last_simulation()` exposes it after
+`ChooseMove()`.
+
+Enable it with `BotConfig::simulation` (`enabled`, `candidates`,
+`iterations`, `plies`, `min_iterations`, `prune_z`, `threads`,
+`time_limit_ms`, `common_random_numbers`), or in the arena:
+
+```sh
+./build/release/apps/scrabble_arena --games 2000 --threads 8 --seed 2024 \
+    --sim-a --endgame-a --endgame-b \
+    --sim-candidates 10 --sim-iterations 80 --sim-min-iterations 32
+```
+
+Other flags are `--sim-b`, `--sim-plies`, `--sim-prune-z`, `--sim-ms` and
+`--sim-no-crn`. `--sim-threads` defaults to 1, because the arena already
+runs one game per thread. Use more threads for interactive analysis. To
+benchmark:
+
+```sh
+./build/release/apps/scrabble_sim_bench --positions 30 --candidates 10 \
+    --iterations 80 --min-iterations 32 --threads 8 --crn-compare
+```
+
+Results on an Apple M3 (4P+4E cores). The machine had heavy unrelated
+load during these runs (load average 20–60), so the times are
+pessimistic:
+
+| Setting | Threads | Time/decision (mean / median) | Rollouts/s |
+|---|---|---|---|
+| 10 × 80 × 2 plies (arena) | 1 | 320 / 238 ms | 1,650 |
+| 10 × 80 × 2 plies | 8 | 65 / 47 ms | 8,200 |
+| 20 × 1,000 × 2 plies (interactive) | 8 | 491 / 365 ms | 5,600 |
+
+A rollout costs about 0.6 ms on one thread, and nearly all of that is
+move generation. The player's own rack usually keeps the blank (the
+learned table values it at +29.5), and racks with a blank produce
+thousands of moves. Pruning cut the interactive setting to 607 of 1,000
+iterations on average. With CRN, the variance of the paired difference
+between the best move and the others is **2.7× lower** (645 vs 1,715
+points², median position 2.9×). That is like running 2.7× as many
+iterations.
+
+Strength, 2,000 games (seed 2024, NASPA, 95% CIs). Both sides use learned
+leaves and the endgame solver:
+
+| A vs B | A win rate | A spread | Time per game |
+|---|---|---|---|
+| sim (10 × 80 × 2) vs static | 54.6% ± 2.2 | +11.3 ± 4.2 | 16 s* |
+| learned static vs heuristic static (5,000 games, seed 7) | 50.9% ± 1.4 | +3.0 ± 2.7 | 43 ms |
+
+\* Thread-seconds (wall time × threads / games). Under the outside load
+the arena got only about 4 of its 8 cores, and the run took 67 minutes.
+Its CPU time was an estimated 7–8 s per game.
+
+Simulation is worth about 11 points a game, roughly three times the gain
+from learned leaves over the heuristic. Next ideas:
+
+- Infer the opponent's rack from their last play. A player who kept tiles
+  probably did not keep a blank or an S they could have played.
+- A proper pre-endgame: once the bag is nearly empty, solve the empty-bag
+  endgames inside the rollouts exactly.
+- Make rollouts faster with a move generator that returns only the best
+  static move, pruning on an equity bound, instead of every move.
+- Choose by win probability instead of spread late in the game.
+
 ## Roadmap
 
 | # | Milestone | Status |
@@ -235,7 +358,7 @@ Intervals are 95%. Time per game is thread-seconds.
 | 4 | Move generation | ✅ |
 | 5 | Self-play arena | ✅ |
 | 6 | Learned rack-leave values | ✅ |
-| 7 | Monte Carlo simulation | |
+| 7 | Monte Carlo simulation | ✅ |
 | 8 | Endgame solver | ✅ |
 | 9 | Web UI + server | |
 | 10 | Benchmarks against external engines | |

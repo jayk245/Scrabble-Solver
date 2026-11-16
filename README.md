@@ -50,12 +50,13 @@ integration tests are skipped if the list has not been fetched.
 
 ## Web UI
 
-An analysis board in the browser (set up a position, enter a rack, and
-browse every legal move ranked by score with board previews) and a game
-viewer for self-play and GCG replays (below). The C++ server
-(`apps/server`, cpp-httplib + nlohmann/json) loads the GADDAG once,
-answers stateless JSON requests and streams games; the frontend (`web/`) is React +
-TypeScript built with Vite. Requires Node.js 20.19+ or 22.12+.
+Three tabs in the browser: a **Solver** that tells you the best move in
+any position and lets you continue the game move by move, **Play** against
+the bot, and a **Game viewer** for self-play and GCG replays (each
+described below). The C++ server (`apps/server`, cpp-httplib +
+nlohmann/json) loads the GADDAG once, answers JSON requests and streams
+games; the frontend (`web/`) is React + TypeScript built with Vite.
+Requires Node.js 20.19+ or 22.12+.
 
 Production (one process; the server also serves `web/dist`):
 
@@ -74,6 +75,94 @@ Development (hot reload; Vite proxies `/api` to the server):
 Server flags: `--port` (8080), `--host` (127.0.0.1), `--lexicon PATH`,
 `--static-dir DIR`. Endpoints are documented in `apps/server/api.h`, and
 the JSON schema in `web/src/api/types.ts`.
+
+### Solver
+
+Set up a game between two players: type tiles onto the board (click a
+square, type; Shift+letter for a blank) or paste a list of moves, then
+enter both names and scores, who is to move and the mover's rack. Tick
+"I know the opponent's rack" if you do (for example when going over a
+finished game). The unseen-tile panel is computed from the board and the
+known racks.
+
+**Solve** asks the engine (`POST /api/analyze`) and shows the best move,
+the ranked candidates with static equity, and:
+
+* with tiles in the bag, a Monte Carlo simulation of the top candidates
+  (mean ± standard error per candidate, iterations, pruning) as a list
+  and a bar chart. A known opponent rack is held fixed in every rollout
+  (`PlayerView::known_opponent_rack`); otherwise it is sampled from the
+  unseen tiles;
+* with the bag empty, the exact endgame solver: the final spread under
+  best play, whether the search completed, and the best line.
+
+Effort presets are Static, Quick (~1 s), Normal (≤ 2.5 s) and Deep
+(≤ 4.5 s). The server caps every request at 5 s and 4 threads and runs
+one search at a time. Hover a candidate to preview it on the board.
+
+**Play it** (or Play on any candidate, the full move list, or a move typed
+in "Check a move") applies the move through `/api/play`, adds its score to
+the mover and passes the turn. The next player's rack starts as their
+leave from their previous turn: type the tiles they drew, or **Fill
+randomly** from the unseen pool for a quick demo. **Auto** solves each new
+position as soon as the rack is complete. Every position is kept, so
+Back/Forward (Alt+←/→) walk the game, Undo (Ctrl+Z) drops the last move,
+editing an earlier position discards the moves after it, and **Export
+GCG** downloads the sequence. End-of-game rack adjustments are not applied
+in the solver.
+
+```sh
+curl -s localhost:8080/api/analyze -d '{"rack": "EIQRSUZ", "effort": "quick",
+  "board": ["...............", "...............", "...............",
+            "...............", "...............", "...............",
+            "...............", "...RETAINS.....", "...............",
+            "...............", "...............", "...............",
+            "...............", "...............", "..............."]}'
+```
+
+### Play against the bot
+
+Pick a strength, who moves first, and optionally a seed and NASPA/WESPA
+rules:
+
+| Strength | Bot |
+|---|---|
+| Easy | the highest-scoring move (no leave values) |
+| Normal | static equity with the learned leaves |
+| Hard | simulation, 10 candidates, ≤ 3 s a move |
+| Expert | larger simulation plus the exact endgame solver, ≤ 4 s |
+
+Place tiles by clicking a square and typing (Shift+letter or an
+exhausted letter uses a blank), or by clicking a square and then a rack
+tile; a blank asks for its letter. While you build a word the engine
+checks it live (`/api/validate`) and shows its score. Submit (Enter),
+Pass, Exchange (pick tiles), Shuffle, Recall (Esc), Hint (the top five
+static moves, with Use to lay one down) and Resign. The scoreboard, bag
+count, unseen tiles from your side and the move log update as the bot
+replies; clicking a logged move shows the board at that point.
+
+When the game ends you see the result, the bot's rack, a GCG download and
+a review: for each of your moves the engine's best static move and the
+equity you gave up. Hover a review row to see that choice on the board.
+
+How it works: the server is the referee. It holds the game (`Game`,
+board, both racks and the bag) in a `HumanGame` (`apps/server/human_game.h`),
+validates every move with the engine, and streams events over the same
+SSE endpoint as the viewer. An illegal word or placement is refused with
+422 and the reason; there is no challenge rule, so a phony never reaches
+the board. After your move the request returns at once and the bot thinks
+on its own thread (at most two bots think at once); its move arrives as an
+event. Events never contain the bot's rack, leave, draws or analysis, its
+exchanges show only the tile count, and a random seed (which fixes the bag
+order) is revealed only at the end. A game nobody touches or watches for
+30 minutes is abandoned. `#play/<id>` reopens a game in progress.
+
+```sh
+curl -s localhost:8080/api/games -d '{"mode": "human", "strength": "hard"}'
+curl -s localhost:8080/api/games/<id>/hint
+curl -s localhost:8080/api/games/<id>/moves -d '{"move": "8D RETAINS"}'
+curl -N localhost:8080/api/games/<id>/events
+```
 
 ### Game viewer
 

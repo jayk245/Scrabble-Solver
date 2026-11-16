@@ -18,17 +18,35 @@
 //   POST /api/validate   legality of one move in notation, with its score
 //   POST /api/play       apply a legal move and return the new board
 //
-// Game viewer (GamesApi in games.h; the only stateful endpoints, backed by
-// the in-memory GameRegistry in game_registry.h):
-//   POST   /api/games              start a bot-vs-bot game or a GCG replay;
+// Position solver (AnalyzeApi in analyze.h; stateless, but searches run one
+// at a time with server-side time caps):
+//   POST /api/analyze    the best move for a two-player position: ranked
+//                        candidates with static equity, Monte Carlo
+//                        statistics, or the exact endgame once the bag is
+//                        empty
+//
+// Games (GamesApi in games.h; the only stateful endpoints, backed by the
+// in-memory GameRegistry in game_registry.h):
+//   POST   /api/games              start a bot-vs-bot game ("selfplay"), a
+//                                  GCG replay ("replay") or a game against
+//                                  the bot ("human", human_game.h);
 //                                  201 {"id", "mode", "events"}
 //   GET    /api/games/{id}/events  Server-Sent Events stream: "start", one
 //                                  "move" per turn, then "end". The SSE id
 //                                  is the event's index, so a reconnecting
 //                                  EventSource resumes via Last-Event-ID.
+//                                  Human games never reveal the bot's rack
+//                                  before "end".
 //   GET    /api/games/{id}         status summary
-//   GET    /api/games/{id}/gcg     the game record (text/plain)
+//   GET    /api/games/{id}/gcg     the game record (text/plain), once over
 //   DELETE /api/games/{id}         cancel a running game
+//   POST   /api/games/{id}/moves   human games: the human's move
+//                                  {"move": notation} or {"resign": true};
+//                                  422 with the engine's reason if illegal
+//                                  (there is no challenge rule), 409 if it
+//                                  is the bot's turn or the game is over
+//   GET    /api/games/{id}/hint    human games: the engine's top static
+//                                  moves for the human's rack
 
 #ifndef SCRABBLE_SERVER_API_H_
 #define SCRABBLE_SERVER_API_H_

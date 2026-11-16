@@ -16,6 +16,8 @@
 //    variable that wakes readers when events arrive). Cancellation is a
 //    separate atomic flag the producer polls between moves, so a cancel
 //    request never waits on the engine.
+//  * Human-vs-bot games (AddInteractive()) have no long-running task: their
+//    owner publishes events from request handlers and per-move bot jobs.
 //  * GameRegistry guards its map with its own mutex. Sessions are held by
 //    shared_ptr, so a stream that is still being read keeps its session
 //    alive after the registry has evicted it.
@@ -164,6 +166,17 @@ class GameRegistry {
   std::shared_ptr<GameSession> AddCompleted(std::string mode,
                                             const Task& task);
 
+  // Registers an open session whose events are published by request
+  // handlers and short jobs instead of one long task: human-vs-bot games
+  // (human_game.h). Such a session does not count toward max_running and is
+  // never cancelled for being unwatched; its owner closes it when the game
+  // ends or is abandoned, after which it expires like any other. Returns
+  // null if the registry is full of open games.
+  std::shared_ptr<GameSession> AddInteractive(std::string mode);
+
+  // True if `id` is registered. Unlike Find(), does not count as watching.
+  bool Contains(std::string_view id);
+
   // Null if `id` is unknown or has expired.
   std::shared_ptr<GameSession> Find(std::string_view id);
 
@@ -177,6 +190,7 @@ class GameRegistry {
   void Sweep();
 
   std::size_t size() const;
+  // Open sessions with a worker thread (AddInteractive() ones excluded).
   std::size_t running() const;
 
  private:
@@ -186,6 +200,7 @@ class GameRegistry {
     std::uint64_t sequence = 0;  // creation order, for eviction
     Clock::time_point last_watched;
     std::optional<Clock::time_point> finished_at;  // when first seen closed
+    bool interactive = false;  // AddInteractive(): owner-driven, no worker
   };
   using Map = std::map<std::string, Entry, std::less<>>;
 

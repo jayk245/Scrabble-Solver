@@ -17,6 +17,8 @@
 #define SCRABBLE_SERVER_CODEC_H_
 
 #include <array>
+#include <cstddef>
+#include <cstdint>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -86,10 +88,41 @@ struct Unseen {
 };
 Unseen ComputeUnseen(const Board& board, const Rack& rack);
 
+// {"A": counts[0], ..., "Z": ..., "?": counts[kBlank]}.
+nlohmann::json TileCountsToJson(const std::array<int, kAlphabetSize>& counts);
+
 // {"unseen": {"A": 9, ...}, "unseenCount", "bagCount", "tilesOnBoard",
 // "overused"}. bagCount assumes the opponent holds a full rack drawn from the
 // unseen tiles.
 nlohmann::json PositionSummaryToJson(const Board& board, const Rack& rack);
+
+// Request field helpers, shared by the handlers that take settings objects.
+// Each throws ApiError (400, "bad_settings") naming the field by `path`
+// (e.g. "players[0].simulation.iterations") and what it must be.
+
+[[noreturn]] void BadSetting(const std::string& path,
+                             const std::string& expected);
+// The field, or null if it is absent or JSON null.
+const nlohmann::json* Field(const nlohmann::json& object,
+                            std::string_view key);
+// An object field; an empty object if absent.
+const nlohmann::json& ObjectField(const nlohmann::json& object,
+                                  std::string_view key,
+                                  const std::string& path);
+bool BoolField(const nlohmann::json& object, std::string_view key,
+               bool fallback, const std::string& path);
+// An integer in [min, max]; out-of-range values are rejected, not clamped,
+// so clients learn the limits.
+std::int64_t IntField(const nlohmann::json& object, std::string_view key,
+                      std::int64_t fallback, std::int64_t min,
+                      std::int64_t max, const std::string& path);
+
+// A player name: 1-kMaxNameLength letters, digits, '_' or '-'. GCG
+// nicknames are single words, so names are restricted to this safe set.
+inline constexpr std::size_t kMaxNameLength = 24;
+std::string PlayerNameField(const nlohmann::json& object, std::string_view key,
+                            const std::string& fallback,
+                            const std::string& path);
 
 // The static rules the client renders from: premium layout, tile values and
 // distribution, rack size and bingo bonus.

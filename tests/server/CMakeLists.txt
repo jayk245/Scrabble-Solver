@@ -1,10 +1,11 @@
 # Socket-free tests for the web server's JSON codec, request handlers, game
-# registry and game streams.
+# registry, game streams and human-vs-bot games.
 add_executable(scrabble_server_tests
   api_test.cc
   codec_test.cc
   game_registry_test.cc
-  games_test.cc)
+  games_test.cc
+  human_game_test.cc)
 target_link_libraries(scrabble_server_tests PRIVATE
   scrabble::server_lib GTest::gtest_main)
 target_compile_definitions(scrabble_server_tests PRIVATE

@@ -1,6 +1,9 @@
 #include "codec.h"
 
+#include <algorithm>
 #include <cstddef>
+#include <cstdint>
+#include <limits>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -231,6 +234,10 @@ Unseen ComputeUnseen(const Board& board, const Rack& rack) {
   return unseen;
 }
 
+Json TileCountsToJson(const std::array<int, kAlphabetSize>& counts) {
+  return PerLetterJson(counts);
+}
+
 Json PositionSummaryToJson(const Board& board, const Rack& rack) {
   const Unseen unseen = ComputeUnseen(board, rack);
   const int bag = unseen.total - kRackSize;
@@ -260,6 +267,72 @@ Json RulesToJson() {
       {"tileValues", PerLetterJson(kTileValues)},
       {"tileCounts", PerLetterJson(kTileCounts)},
   };
+}
+
+void BadSetting(const std::string& path, const std::string& expected) {
+  throw ApiError(400, "bad_settings", path + " must be " + expected);
+}
+
+const Json* Field(const Json& object, std::string_view key) {
+  const auto it = object.find(key);
+  return it == object.end() || it->is_null() ? nullptr : &*it;
+}
+
+const Json& ObjectField(const Json& object, std::string_view key,
+                        const std::string& path) {
+  static const Json kEmpty = Json::object();
+  const Json* value = Field(object, key);
+  if (value == nullptr) return kEmpty;
+  if (!value->is_object()) BadSetting(path, "an object");
+  return *value;
+}
+
+bool BoolField(const Json& object, std::string_view key, bool fallback,
+               const std::string& path) {
+  const Json* value = Field(object, key);
+  if (value == nullptr) return fallback;
+  if (!value->is_boolean()) BadSetting(path, "true or false");
+  return value->get<bool>();
+}
+
+std::int64_t IntField(const Json& object, std::string_view key,
+                      std::int64_t fallback, std::int64_t min,
+                      std::int64_t max, const std::string& path) {
+  const Json* value = Field(object, key);
+  if (value == nullptr) return fallback;
+  const std::string range =
+      "an integer in " + std::to_string(min) + ".." + std::to_string(max);
+  if (!value->is_number_integer()) BadSetting(path, range);
+  // Unsigned values above INT64_MAX do not fit get<int64_t>(); reject them
+  // before conversion.
+  if (value->is_number_unsigned() &&
+      value->get<std::uint64_t>() >
+          static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max())) {
+    BadSetting(path, range);
+  }
+  const auto number = value->get<std::int64_t>();
+  if (number < min || number > max) BadSetting(path, range);
+  return number;
+}
+
+std::string PlayerNameField(const Json& object, std::string_view key,
+                            const std::string& fallback,
+                            const std::string& path) {
+  const Json* name = Field(object, key);
+  if (name == nullptr) return fallback;
+  const std::string expected = "1-" + std::to_string(kMaxNameLength) +
+                               " characters of letters, digits, '_' or '-'";
+  if (!name->is_string()) BadSetting(path, expected);
+  const auto& text = name->get_ref<const std::string&>();
+  const auto valid = [](char c) {
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+           (c >= '0' && c <= '9') || c == '_' || c == '-';
+  };
+  if (text.empty() || text.size() > kMaxNameLength ||
+      !std::all_of(text.begin(), text.end(), valid)) {
+    BadSetting(path, expected);
+  }
+  return text;
 }
 
 }  // namespace scrabble::server

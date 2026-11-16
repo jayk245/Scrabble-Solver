@@ -1,4 +1,5 @@
-// Streamed games for the game viewer: bot-vs-bot self-play and GCG replay.
+// Streamed games for the game viewer: bot-vs-bot self-play and GCG replay,
+// plus routing for human-vs-bot games (human_game.h).
 //
 // Both modes produce the same event stream (see web/src/api/types.ts for
 // the full schema), so the viewer has one code path:
@@ -36,8 +37,10 @@
 
 #include <nlohmann/json.hpp>
 
+#include "analysis.h"
 #include "api.h"
 #include "game_registry.h"
+#include "human_game.h"
 #include "scrabble/bot.h"
 #include "scrabble/gaddag.h"
 #include "scrabble/game.h"
@@ -56,8 +59,6 @@ inline constexpr int kMaxAnalysisCandidates = 30;
 // Seeds are exchanged as JSON numbers, which JavaScript reads as doubles,
 // so they are kept within the exactly representable integer range.
 inline constexpr std::uint64_t kMaxSeed = (std::uint64_t{1} << 53) - 1;
-
-enum class LeaveKind : std::uint8_t { kLearned, kHeuristic, kZero };
 
 struct PlayerSettings {
   std::string name;
@@ -123,17 +124,28 @@ std::vector<GameEvent> ReplayEvents(const Gaddag& gaddag, std::string_view gcg);
 class GamesApi {
  public:
   // `gaddag` and `registry` must outlive the GamesApi.
-  GamesApi(const Gaddag& gaddag, GameRegistry& registry)
-      : gaddag_(&gaddag), registry_(&registry) {}
+  GamesApi(const Gaddag& gaddag, GameRegistry& registry,
+           HumanGamesOptions human_options = {})
+      : gaddag_(&gaddag),
+        registry_(&registry),
+        humans_(gaddag, registry, human_options) {}
 
-  // POST /api/games: {"mode": "selfplay", ...} or
-  // {"mode": "replay", "gcg": "..."}. 201 with {"id", "mode", "events"}
-  // (the events URL); 503 "too_many_games" when the server is busy.
+  // POST /api/games: {"mode": "selfplay", ...},
+  // {"mode": "replay", "gcg": "..."} or {"mode": "human", ...} (see
+  // human_game.h). 201 with {"id", "mode", "events"} (the events URL);
+  // 503 "too_many_games" when the server is busy.
   ApiResponse Start(std::string_view body);
   // GET /api/games/{id}: the session summary.
   ApiResponse Status(std::string_view id);
-  // DELETE /api/games/{id}: cancels a running game.
+  // DELETE /api/games/{id}: cancels a running game (or ends a human game).
   ApiResponse Cancel(std::string_view id);
+
+  // POST /api/games/{id}/moves: the human's move in a human-vs-bot game.
+  ApiResponse HumanMove(std::string_view id, std::string_view body) {
+    return humans_.Play(id, body);
+  }
+  // GET /api/games/{id}/hint: the engine's suggestions for the human.
+  ApiResponse Hint(std::string_view id) { return humans_.Hint(id); }
 
   // The session behind GET /api/games/{id}/events and /gcg; null if
   // unknown.
@@ -144,6 +156,7 @@ class GamesApi {
  private:
   const Gaddag* gaddag_;
   GameRegistry* registry_;
+  HumanGames humans_;
 };
 
 }  // namespace scrabble::server

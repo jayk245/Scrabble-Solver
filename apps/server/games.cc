@@ -14,6 +14,7 @@
 #include <utility>
 #include <vector>
 
+#include "analysis.h"
 #include "codec.h"
 #include "scrabble/board.h"
 #include "scrabble/endgame.h"
@@ -34,7 +35,6 @@ using Json = nlohmann::json;
 
 // GCG records are a few kilobytes; anything far larger is not one.
 constexpr std::size_t kMaxGcgBytes = 64 * 1024;
-constexpr std::size_t kMaxNameLength = 24;
 constexpr int kMinSimulationIterations = 16;
 constexpr std::int64_t kMinEndgameNodes = 1000;
 
@@ -45,71 +45,8 @@ constexpr std::uint64_t kDecisionSalt = 0x5DEECE66DULL;
 // ---------------------------------------------------------------------------
 // Request parsing
 
-[[noreturn]] void BadSetting(const std::string& path,
-                             const std::string& expected) {
-  throw ApiError(400, "bad_settings", path + " must be " + expected);
-}
-
-// The field, or null if it is absent or JSON null.
-const Json* Field(const Json& object, std::string_view key) {
-  const auto it = object.find(key);
-  return it == object.end() || it->is_null() ? nullptr : &*it;
-}
-
-const Json& ObjectField(const Json& object, std::string_view key,
-                        const std::string& path) {
-  static const Json kEmpty = Json::object();
-  const Json* value = Field(object, key);
-  if (value == nullptr) return kEmpty;
-  if (!value->is_object()) BadSetting(path, "an object");
-  return *value;
-}
-
-bool BoolField(const Json& object, std::string_view key, bool fallback,
-               const std::string& path) {
-  const Json* value = Field(object, key);
-  if (value == nullptr) return fallback;
-  if (!value->is_boolean()) BadSetting(path, "true or false");
-  return value->get<bool>();
-}
-
-std::int64_t IntField(const Json& object, std::string_view key,
-                      std::int64_t fallback, std::int64_t min,
-                      std::int64_t max, const std::string& path) {
-  const Json* value = Field(object, key);
-  if (value == nullptr) return fallback;
-  const std::string range =
-      "an integer in " + std::to_string(min) + ".." + std::to_string(max);
-  if (!value->is_number_integer()) BadSetting(path, range);
-  // Unsigned values above INT64_MAX do not fit get<int64_t>(); reject them
-  // before conversion.
-  if (value->is_number_unsigned() &&
-      value->get<std::uint64_t>() >
-          static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max())) {
-    BadSetting(path, range);
-  }
-  const auto number = value->get<std::int64_t>();
-  if (number < min || number > max) BadSetting(path, range);
-  return number;
-}
-
-std::string_view LeaveKindName(LeaveKind kind) {
-  switch (kind) {
-    case LeaveKind::kLearned: return "learned";
-    case LeaveKind::kHeuristic: return "heuristic";
-    case LeaveKind::kZero: return "zero";
-  }
-  return "learned";
-}
-
 std::string_view RulesName(EndRules rules) {
   return rules == EndRules::kWespa ? "wespa" : "naspa";
-}
-
-// GCG nicknames are single words, so names are restricted to a safe set.
-bool IsNameChar(char c) {
-  return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
-         (c >= '0' && c <= '9') || c == '_' || c == '-';
 }
 
 PlayerSettings PlayerFromJson(const Json& object, int seat) {
@@ -117,19 +54,8 @@ PlayerSettings PlayerFromJson(const Json& object, int seat) {
   if (!object.is_object()) BadSetting(path, "an object");
   PlayerSettings player;
 
-  player.name = "bot" + std::to_string(seat + 1);
-  if (const Json* name = Field(object, "name")) {
-    const std::string expected =
-        "1-" + std::to_string(kMaxNameLength) +
-        " characters of letters, digits, '_' or '-'";
-    if (!name->is_string()) BadSetting(path + ".name", expected);
-    const auto& text = name->get_ref<const std::string&>();
-    if (text.empty() || text.size() > kMaxNameLength ||
-        !std::all_of(text.begin(), text.end(), IsNameChar)) {
-      BadSetting(path + ".name", expected);
-    }
-    player.name = text;
-  }
+  player.name = PlayerNameField(object, "name", "bot" + std::to_string(seat + 1),
+                                path + ".name");
 
   if (const Json* leaves = Field(object, "leaves")) {
     const std::string expected = "\"learned\", \"heuristic\" or \"zero\"";
@@ -184,145 +110,7 @@ Json PlayerSettingsToJson(const PlayerSettings& player) {
 // ---------------------------------------------------------------------------
 // Event encoding
 
-// Two decimals is far below any meaningful equity difference and keeps the
-// stream compact.
-double Round2(double value) { return std::round(value * 100.0) / 100.0; }
-
-// Moves from the same generator compare equal field by field; equity is
-// whatever the last evaluator wrote, so it is ignored.
-bool SameMove(Move a, Move b) {
-  a.equity = 0.0;
-  b.equity = 0.0;
-  return a == b;
-}
-
 Json Pair(int a, int b) { return Json::array({a, b}); }
-
-std::string_view StopName(SimulationStop stop) {
-  switch (stop) {
-    case SimulationStop::kSingleCandidate: return "single_candidate";
-    case SimulationStop::kIterations: return "iterations";
-    case SimulationStop::kTime: return "time";
-  }
-  return "iterations";
-}
-
-// Zero-based rank of `move` in `ranked` (sorted by equity, best first), or
-// -1 if absent. Moves of equal equity share the best rank among them, so
-// the rank does not depend on how the sort ordered ties.
-int RankOf(const std::vector<Move>& ranked, const Move& move) {
-  for (std::size_t i = 0; i < ranked.size(); ++i) {
-    if (!SameMove(ranked[i], move)) continue;
-    std::size_t rank = i;
-    while (rank > 0 && ranked[rank - 1].equity == ranked[i].equity) --rank;
-    return static_cast<int>(rank);
-  }
-  return -1;
-}
-
-Json StaticCandidateJson(const Move& move, const Rack& rack, int rank,
-                         bool chosen) {
-  return {{"move", MoveToJson(move, &rack)},
-          {"equity", Round2(move.equity)},
-          {"staticRank", rank < 0 ? Json(nullptr) : Json(rank + 1)},
-          {"chosen", chosen}};
-}
-
-// The analysis block of a move event:
-//
-//   {"method": "static" | "simulation" | "endgame",
-//    "totalMoves": n, "playedRank": r | null, "playedEquity": e | null,
-//    "candidates": [{"move", "equity", "staticRank", "chosen",
-//                    "sim"?: {"mean", "stdError", "stddev", "iterations",
-//                             "pruned", "diffFromBest", "diffStdError"}}],
-//    "simulation"?: {"iterations", "rollouts", "seconds", "stop", "plies"},
-//    "endgame"?: {"value", "complete", "depth", "nodes", "seconds", "pv"}}
-//
-// `ranked` is every legal move in static order. Candidates are the
-// simulated moves (best mean first) when `simulation` is given, otherwise
-// the top `limit` static moves.
-Json AnalysisJson(const std::vector<Move>& ranked, const Rack& rack,
-                  const Move& played, int limit,
-                  const SimulationResult* simulation, int plies,
-                  const EndgameResult* endgame) {
-  const int played_rank = RankOf(ranked, played);
-  Json analysis = {
-      {"method", simulation != nullptr ? "simulation"
-                 : endgame != nullptr  ? "endgame"
-                                       : "static"},
-      {"totalMoves", ranked.size()},
-      {"playedRank", played_rank < 0 ? Json(nullptr) : Json(played_rank + 1)},
-      {"playedEquity",
-       played_rank < 0
-           ? Json(nullptr)
-           : Json(Round2(ranked[static_cast<std::size_t>(played_rank)]
-                             .equity))},
-  };
-
-  Json candidates = Json::array();
-  if (simulation != nullptr) {
-    std::vector<const CandidateStats*> order;
-    for (const CandidateStats& stats : simulation->candidates) {
-      order.push_back(&stats);
-    }
-    std::stable_sort(order.begin(), order.end(),
-                     [](const CandidateStats* a, const CandidateStats* b) {
-                       return a->mean > b->mean;
-                     });
-    for (const CandidateStats* stats : order) {
-      Json candidate = StaticCandidateJson(stats->move, rack,
-                                           RankOf(ranked, stats->move),
-                                           SameMove(stats->move, played));
-      candidate["sim"] = {{"mean", Round2(stats->mean)},
-                          {"stdError", Round2(stats->std_error)},
-                          {"stddev", Round2(stats->stddev)},
-                          {"iterations", stats->iterations},
-                          {"pruned", stats->pruned},
-                          {"diffFromBest", Round2(stats->diff_from_best)},
-                          {"diffStdError", Round2(stats->diff_std_error)}};
-      candidates.push_back(std::move(candidate));
-    }
-    analysis["simulation"] = {{"iterations", simulation->iterations},
-                              {"rollouts", simulation->rollouts},
-                              {"seconds", simulation->seconds},
-                              {"stop", StopName(simulation->stop)},
-                              {"plies", plies}};
-  } else {
-    const std::size_t count =
-        std::min(ranked.size(), static_cast<std::size_t>(limit));
-    for (std::size_t i = 0; i < count; ++i) {
-      candidates.push_back(StaticCandidateJson(
-          ranked[i], rack, static_cast<int>(i), SameMove(ranked[i], played)));
-    }
-  }
-  analysis["candidates"] = std::move(candidates);
-
-  if (endgame != nullptr) {
-    Json pv = Json::array();
-    for (const Move& move : endgame->pv) pv.push_back(move.ToString());
-    analysis["endgame"] = {{"value", endgame->value},
-                           {"complete", endgame->complete},
-                           {"depth", endgame->depth},
-                           {"nodes", endgame->nodes},
-                           {"seconds", endgame->seconds},
-                           {"pv", std::move(pv)}};
-  }
-  return analysis;
-}
-
-std::shared_ptr<const LeaveEvaluator> Leaves(LeaveKind kind) {
-  // Built once and shared by every bot, like DefaultLeaves().
-  static const auto heuristic =
-      std::make_shared<const LeaveEvaluator>(LeaveEvaluator::Heuristic());
-  static const auto zero =
-      std::make_shared<const LeaveEvaluator>(LeaveEvaluator::Zero());
-  switch (kind) {
-    case LeaveKind::kLearned: return DefaultLeaves();
-    case LeaveKind::kHeuristic: return heuristic;
-    case LeaveKind::kZero: return zero;
-  }
-  return DefaultLeaves();
-}
 
 // ---------------------------------------------------------------------------
 // Self-play
@@ -792,7 +580,7 @@ Json SelfPlaySettingsToJson(const SelfPlaySettings& settings) {
 BotConfig MakeBotConfig(const PlayerSettings& player) {
   BotConfig config;
   config.name = player.name;
-  config.leaves = Leaves(player.leaves);
+  config.leaves = LeavesFor(player.leaves);
   config.simulation.enabled = player.simulate;
   config.simulation.candidates = player.candidates;
   config.simulation.iterations = player.iterations;
@@ -830,11 +618,13 @@ std::vector<GameEvent> ReplayEvents(const Gaddag& gaddag,
 }
 
 ApiResponse GamesApi::Start(std::string_view body) {
+  static const std::string kModes =
+      "\"selfplay\", \"replay\" or \"human\"";
   return GuardedResponse([&]() -> ApiResponse {
     const Json request = ParseRequestObject(body);
     std::string mode = "selfplay";
     if (const Json* value = Field(request, "mode")) {
-      if (!value->is_string()) BadSetting("mode", "\"selfplay\" or \"replay\"");
+      if (!value->is_string()) BadSetting("mode", kModes);
       mode = value->get<std::string>();
     }
 
@@ -849,6 +639,8 @@ ApiResponse GamesApi::Start(std::string_view body) {
             RunSelfPlay(*gaddag, settings, game);
           });
       response["seed"] = settings.seed;
+    } else if (mode == "human") {
+      return humans_.Start(request, RandomSeed());
     } else if (mode == "replay") {
       const Json* gcg = Field(request, "gcg");
       if (gcg == nullptr || !gcg->is_string()) {
@@ -867,7 +659,7 @@ ApiResponse GamesApi::Start(std::string_view body) {
         game.set_gcg(text);
       });
     } else {
-      BadSetting("mode", "\"selfplay\" or \"replay\"");
+      BadSetting("mode", kModes);
     }
 
     if (session == nullptr) {
@@ -892,6 +684,7 @@ ApiResponse GamesApi::Status(std::string_view id) {
 }
 
 ApiResponse GamesApi::Cancel(std::string_view id) {
+  if (humans_.Cancel(id)) return Status(id);
   if (!registry_->Cancel(id)) {
     return ErrorResponse(404, "unknown_game",
                          "no game " + std::string(id) + " (it may have expired)");

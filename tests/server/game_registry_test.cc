@@ -176,6 +176,33 @@ TEST(GameRegistryTest, UnwatchedRunningGamesAreCancelled) {
   registry.Cancel(watched->id());
 }
 
+// Interactive sessions are driven by their owner: they neither count as
+// running nor get cancelled for being unwatched, and expire once closed.
+TEST(GameRegistryTest, InteractiveSessionsAreOwnerDriven) {
+  FakeClock clock;
+  GameRegistry registry({.max_running = 1,
+                         .finished_ttl = std::chrono::seconds(60),
+                         .idle_ttl = std::chrono::seconds(30)},
+                        clock.Function());
+  const auto session = registry.AddInteractive("human");
+  ASSERT_NE(session, nullptr);
+  EXPECT_EQ(session->mode(), "human");
+  EXPECT_EQ(registry.running(), 0u);
+  EXPECT_TRUE(registry.Contains(session->id()));
+
+  clock.Advance(std::chrono::seconds(31));
+  registry.Sweep();
+  EXPECT_FALSE(session->cancel_requested());
+  EXPECT_FALSE(session->closed());
+
+  session->Close();
+  clock.Advance(std::chrono::seconds(1));
+  registry.Sweep();
+  EXPECT_TRUE(registry.Contains(session->id()));
+  clock.Advance(std::chrono::seconds(61));
+  EXPECT_FALSE(registry.Contains(session->id()));
+}
+
 TEST(GameRegistryTest, EvictsTheOldestFinishedGameWhenFull) {
   GameRegistry registry({.max_games = 2});
   const auto a = registry.AddCompleted("replay", [](GameSession&) {});

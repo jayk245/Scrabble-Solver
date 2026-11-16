@@ -161,6 +161,34 @@ std::shared_ptr<GameSession> GameRegistry::AddCompleted(std::string mode,
   return session;
 }
 
+std::shared_ptr<GameSession> GameRegistry::AddInteractive(std::string mode) {
+  std::vector<std::thread> finished;
+  std::shared_ptr<GameSession> session;
+  {
+    const std::lock_guard lock(mutex_);
+    SweepLocked(finished);
+    if (MakeRoomLocked(finished)) {
+      Entry& entry = InsertLocked(std::move(mode))->second;
+      entry.interactive = true;
+      session = entry.session;
+    }
+  }
+  Join(finished);
+  return session;
+}
+
+bool GameRegistry::Contains(std::string_view id) {
+  std::vector<std::thread> finished;
+  bool found = false;
+  {
+    const std::lock_guard lock(mutex_);
+    SweepLocked(finished);
+    found = games_.find(id) != games_.end();
+  }
+  Join(finished);
+  return found;
+}
+
 std::shared_ptr<GameSession> GameRegistry::Find(std::string_view id) {
   std::vector<std::thread> finished;
   std::shared_ptr<GameSession> session;
@@ -227,6 +255,8 @@ void GameRegistry::SweepLocked(std::vector<std::thread>& finished) {
         it = games_.erase(it);
         continue;
       }
+    } else if (entry.interactive) {
+      // The owner decides when an unwatched game is abandoned.
     } else if (session.readers() > 0) {
       entry.last_watched = now;
     } else if (now - entry.last_watched >= options_.idle_ttl) {
@@ -258,7 +288,7 @@ bool GameRegistry::MakeRoomLocked(std::vector<std::thread>& finished) {
 std::size_t GameRegistry::RunningLocked() const {
   std::size_t running = 0;
   for (const auto& [id, entry] : games_) {
-    if (!entry.session->closed()) ++running;
+    if (!entry.interactive && !entry.session->closed()) ++running;
   }
   return running;
 }

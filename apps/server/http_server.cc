@@ -177,6 +177,15 @@ bool Serve(const Api& api, GamesApi& games, const HttpOptions& options) {
                               "attachment; filename=\"game-" + id + ".gcg\"");
                res.set_content(gcg, "text/plain; charset=utf-8");
              });
+  // Human-vs-bot games (human_game.h).
+  server.Post(R"(/api/games/([0-9a-f]+)/moves)",
+              [&games](const httplib::Request& req, httplib::Response& res) {
+                Send(res, games.HumanMove(req.matches[1].str(), req.body));
+              });
+  server.Get(R"(/api/games/([0-9a-f]+)/hint)",
+             [&games](const httplib::Request& req, httplib::Response& res) {
+               Send(res, games.Hint(req.matches[1].str()));
+             });
   server.Get(R"(/api/games/([0-9a-f]+)/events)",
              [&games](const httplib::Request& req, httplib::Response& res) {
                StreamEvents(games, req, res);

@@ -36,10 +36,12 @@ target_include_directories(scrabble_third_party_json SYSTEM INTERFACE
   ${nlohmann_json_SOURCE_DIR}/single_include)
 
 add_library(scrabble_server_lib
+  analysis.cc
   api.cc
   codec.cc
   game_registry.cc
-  games.cc)
+  games.cc
+  human_game.cc)
 add_library(scrabble::server_lib ALIAS scrabble_server_lib)
 target_include_directories(scrabble_server_lib PUBLIC
   ${CMAKE_CURRENT_SOURCE_DIR})

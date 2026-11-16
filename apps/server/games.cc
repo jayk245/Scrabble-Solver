@@ -224,7 +224,7 @@ Json StaticCandidateJson(const Move& move, const Rack& rack, int rank,
                          bool chosen) {
   return {{"move", MoveToJson(move, &rack)},
           {"equity", Round2(move.equity)},
-          {"staticRank", rank + 1},
+          {"staticRank", rank < 0 ? Json(nullptr) : Json(rank + 1)},
           {"chosen", chosen}};
 }
 

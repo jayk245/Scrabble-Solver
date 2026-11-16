@@ -177,6 +177,49 @@ TEST_F(EnableBotTest, ZeroLeavesMaximiseScore) {
   }
 }
 
+// A requested move is simulated even when the static ranking would leave it
+// out, so an analysis can compare it with the engine's choice.
+TEST_F(EnableBotTest, SimulatesExtraCandidates) {
+  BotConfig config;
+  config.simulation.enabled = true;
+  config.simulation.candidates = 2;
+  config.simulation.iterations = 16;
+  config.simulation.min_iterations = 16;
+  config.simulation.threads = 1;
+  Bot bot(*gaddag_, config);
+  Game game(*gaddag_, 42);
+  const PlayerView view = game.ViewForMover();
+  std::vector<Move> ranked;
+  bot.RankMoves(view, 50, ranked);
+  ASSERT_GE(ranked.size(), 50u);
+  const auto placement = std::find_if(
+      ranked.rbegin(), ranked.rend(),
+      [](const Move& move) { return move.type == MoveType::kPlace; });
+  ASSERT_NE(placement, ranked.rend());
+  const Move weak = *placement;
+  Move illegal = weak;
+  illegal.row = (illegal.row + 7) % kBoardSize;  // off the centre square
+
+  const auto simulated = [&bot](const Move& wanted) {
+    const SimulationResult* result = bot.last_simulation();
+    if (result == nullptr) return false;
+    return std::any_of(result->candidates.begin(), result->candidates.end(),
+                       [&wanted](const CandidateStats& stats) {
+                         Move move = stats.move;
+                         move.equity = wanted.equity;
+                         return move == wanted;
+                       });
+  };
+  Rng rng(1);
+  bot.ChooseMove(view, rng);
+  EXPECT_FALSE(simulated(weak));
+
+  bot.set_extra_candidates({weak, illegal});
+  bot.ChooseMove(view, rng);
+  EXPECT_TRUE(simulated(weak));
+  EXPECT_FALSE(simulated(illegal));
+}
+
 TEST_F(EnableBotTest, GamesAreDeterministicPerSeed) {
   const auto play = [this](std::uint64_t seed) {
     Bot bot(*gaddag_, BotConfig{});

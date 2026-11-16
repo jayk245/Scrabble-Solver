@@ -146,6 +146,22 @@ void Bot::SelectCandidates() {
       std::find(order_.begin(), order_.begin() + static_cast<std::ptrdiff_t>(keep),
                 top_scorer) != order_.begin() + static_cast<std::ptrdiff_t>(keep);
   if (!included) candidates_.push_back(moves_[top_scorer]);
+
+  // Equity is whatever the evaluator last wrote, so it takes no part in
+  // matching a requested move to a generated one.
+  const auto same_play = [](Move a, Move b) {
+    a.equity = 0.0;
+    b.equity = 0.0;
+    return a == b;
+  };
+  for (const Move& extra : extra_candidates_) {
+    const auto matches = [&](const Move& move) {
+      return same_play(move, extra);
+    };
+    if (std::any_of(candidates_.begin(), candidates_.end(), matches)) continue;
+    const auto legal = std::find_if(moves_.begin(), moves_.end(), matches);
+    if (legal != moves_.end()) candidates_.push_back(*legal);
+  }
 }
 
 }  // namespace scrabble

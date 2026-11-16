@@ -28,6 +28,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "scrabble/endgame.h"
@@ -112,6 +113,16 @@ class Bot {
     return last_endgame_.has_value() ? &*last_endgame_ : nullptr;
   }
 
+  // Moves to simulate alongside the automatically selected candidates, for
+  // analysis front ends that need a particular move evaluated (for example
+  // the move a player actually made, to measure what it gave up). Each is
+  // matched against the legal moves ignoring equity, and one that is not
+  // legal for the view is skipped. Applies to every later ChooseMove() that
+  // simulates, until replaced; empty by default.
+  void set_extra_candidates(std::vector<Move> moves) {
+    extra_candidates_ = std::move(moves);
+  }
+
   const BotConfig& config() const { return config_; }
 
  private:
@@ -123,7 +134,8 @@ class Bot {
   void EvaluateStatic(const PlayerView& view);
   // Fills candidates_ from moves_ (after EvaluateStatic()): the top
   // config_.simulation.candidates by equity, ties in generation order, plus
-  // the highest-scoring move if it is not among them.
+  // the highest-scoring move and the extra candidates if they are not among
+  // them.
   void SelectCandidates();
 
   BotConfig config_;
@@ -135,6 +147,7 @@ class Bot {
   std::unique_ptr<Simulator> simulator_;
   std::vector<std::size_t> order_;
   std::vector<Move> candidates_;
+  std::vector<Move> extra_candidates_;
   const SimulationResult* last_simulation_ = nullptr;  // owned by simulator_
 
   // Endgame stage; null when disabled. The solver mutates a Position, so

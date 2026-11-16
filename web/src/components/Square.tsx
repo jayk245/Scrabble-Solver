@@ -13,10 +13,10 @@ const PREMIUM_CLASS: Record<string, string> = {
 };
 
 const PREMIUM_LABEL: Record<string, string> = {
-  T: 'TW',
-  D: 'DW',
-  t: 'TL',
-  d: 'DL',
+  T: '3W',
+  D: '2W',
+  t: '3L',
+  d: '2L',
   '*': '★',
 };
 

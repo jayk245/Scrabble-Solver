@@ -1,8 +1,8 @@
 const ENTRIES = [
-  { className: 'premium-tw', label: 'TW', text: 'Triple word' },
-  { className: 'premium-dw', label: 'DW', text: 'Double word' },
-  { className: 'premium-tl', label: 'TL', text: 'Triple letter' },
-  { className: 'premium-dl', label: 'DL', text: 'Double letter' },
+  { className: 'premium-tw', label: '3W', text: 'Triple word' },
+  { className: 'premium-dw', label: '2W', text: 'Double word' },
+  { className: 'premium-tl', label: '3L', text: 'Triple letter' },
+  { className: 'premium-dl', label: '2L', text: 'Double letter' },
 ];
 
 /** Key for the premium-square colours, plus the tile conventions. */

@@ -25,6 +25,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <string_view>
 #include <vector>
 
@@ -120,6 +121,12 @@ struct PlayerView {
   int scoreless_turns = 0;
   int turn = 0;
   EndRules end_rules = EndRules::kNaspa;
+  // The opponent's exact rack, when an analysis front end knows it (e.g. a
+  // user entering a position from a finished game). Must be a sub-multiset
+  // of `unseen` with opponent_rack_size tiles. Simulation then samples only
+  // the bag order instead of the opponent's rack. Game never sets it: a
+  // player is not entitled to see the opponent's tiles.
+  std::optional<Rack> known_opponent_rack;
 
   bool CanExchange() const { return bag_size >= kMinBagForExchange; }
 };

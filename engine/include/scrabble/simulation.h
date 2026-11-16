@@ -153,11 +153,13 @@ struct SimulationSample {
 };
 
 // True if `view` describes a state Simulator can sample: its unseen counts
-// sum to unseen_size == bag_size + opponent_rack_size, and the opponent's
-// rack size is within 0..kRackSize.
+// sum to unseen_size == bag_size + opponent_rack_size, the opponent's rack
+// size is within 0..kRackSize, and a known_opponent_rack, if set, has that
+// size and is drawn from the unseen tiles.
 bool CanSimulate(const PlayerView& view);
 
-// Draws a uniformly random SimulationSample for `view`. Precondition:
+// Draws a uniformly random SimulationSample for `view`: with a
+// known_opponent_rack only the bag order is random. Precondition:
 // CanSimulate(view).
 void DrawSample(const PlayerView& view, Rng& rng, SimulationSample& out);
 

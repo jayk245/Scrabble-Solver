@@ -149,6 +149,37 @@ TEST_F(SimulationTest, SamplesConserveTheUnseenTiles) {
   EXPECT_FALSE(CanSimulate(bad));
 }
 
+// A known opponent rack is used as is; the bag is the rest of the unseen
+// tiles, and a rack the unseen pool cannot supply is rejected.
+TEST_F(SimulationTest, KnownOpponentRackIsKept) {
+  const Game game(*gaddag_, 2);
+  PlayerView view = game.ViewForMover();
+  const Rack opponent = game.rack(1 - view.player);
+  view.known_opponent_rack = opponent;
+  ASSERT_TRUE(CanSimulate(view));
+  Rng rng(11);
+  SimulationSample sample;
+  for (int i = 0; i < 50; ++i) {
+    DrawSample(view, rng, sample);
+    ASSERT_EQ(sample.opponent, opponent);
+    ASSERT_EQ(sample.bag_size, view.bag_size);
+    std::array<int, kAlphabetSize> counts{};
+    for (int t = 0; t < sample.bag_size; ++t) {
+      ++counts[sample.bag[static_cast<std::size_t>(t)]];
+    }
+    for (Letter l = 0; l < kAlphabetSize; ++l) {
+      ASSERT_EQ(counts[l] + opponent.Count(l), view.unseen[l]);
+    }
+  }
+
+  PlayerView short_rack = view;
+  short_rack.known_opponent_rack = *Rack::FromString("AB");
+  EXPECT_FALSE(CanSimulate(short_rack));
+  PlayerView impossible = view;
+  impossible.known_opponent_rack = *Rack::FromString("ZZZZZZZ");
+  EXPECT_FALSE(CanSimulate(impossible));
+}
+
 // Every tile is equally likely to land on the opponent's rack.
 TEST_F(SimulationTest, OpponentRacksAreUniform) {
   const Game game(*gaddag_, 1);

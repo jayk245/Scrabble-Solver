@@ -7,6 +7,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <stdexcept>
 #include <thread>
 #include <utility>
@@ -47,24 +48,40 @@ bool CanSimulate(const PlayerView& view) {
   }
   int total = 0;
   for (const std::uint8_t count : view.unseen) total += count;
-  return total == view.unseen_size;
+  if (total != view.unseen_size) return false;
+  if (const std::optional<Rack>& known = view.known_opponent_rack) {
+    if (known->Size() != view.opponent_rack_size) return false;
+    for (Letter letter = 0; letter < kAlphabetSize; ++letter) {
+      if (known->Count(letter) > view.unseen[letter]) return false;
+    }
+  }
+  return true;
 }
 
 void DrawSample(const PlayerView& view, Rng& rng, SimulationSample& out) {
   assert(CanSimulate(view));
+  const Rack* known =
+      view.known_opponent_rack ? &*view.known_opponent_rack : nullptr;
   int size = 0;
   for (Letter letter = 0; letter < kAlphabetSize; ++letter) {
-    for (int n = view.unseen[letter]; n > 0; --n) {
+    const int held = known != nullptr ? known->Count(letter) : 0;
+    for (int n = view.unseen[letter] - held; n > 0; --n) {
       out.bag[static_cast<std::size_t>(size++)] = letter;
     }
   }
-  // Fisher-Yates: every permutation of the unseen tiles is equally likely,
-  // so the opponent's rack (the tail) is a uniform subset and the rest is a
+  // Fisher-Yates: every permutation of the tiles is equally likely, so the
+  // opponent's rack (the tail) is a uniform subset and the rest is a
   // uniform draw order.
   for (int i = 0; i + 1 < size; ++i) {
     const auto j = static_cast<std::size_t>(
         i + static_cast<int>(rng.Below(static_cast<std::uint32_t>(size - i))));
     std::swap(out.bag[static_cast<std::size_t>(i)], out.bag[j]);
+  }
+  if (known != nullptr) {
+    // The opponent's rack is fixed; only the draw order is uncertain.
+    out.bag_size = size;
+    out.opponent = *known;
+    return;
   }
   out.bag_size = size - view.opponent_rack_size;
   out.opponent.Clear();

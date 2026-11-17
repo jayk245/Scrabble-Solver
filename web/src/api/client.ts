@@ -12,6 +12,8 @@ import type {
   HumanMoveResponse,
   MoveAnalysis,
   MovesRequest,
+  ParseGcgRequest,
+  ParseGcgResponse,
   MovesResponse,
   PlayRequest,
   PlayResponse,
@@ -96,6 +98,7 @@ export const api = {
   hint: (id: string) => request<MoveAnalysis>(`/api/games/${encodeURIComponent(id)}/hint`),
   analyze: (body: AnalyzeRequest, signal?: AbortSignal) =>
     post<AnalyzeResponse>('/api/analyze', body, signal),
+  parseGcg: (body: ParseGcgRequest) => post<ParseGcgResponse>('/api/gcg', body),
 };
 
 /** Server-Sent Events stream of a game (consumed with EventSource). */

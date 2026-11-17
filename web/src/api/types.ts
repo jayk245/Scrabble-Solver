@@ -467,6 +467,11 @@ export interface AnalyzeRequest {
   /** Static candidates listed (1-30) when not simulating. */
   limit?: number;
   seed?: number;
+  /**
+   * A move to evaluate alongside the engine's, e.g. the one actually made
+   * (for a game review). It is always simulated when the search simulates.
+   */
+  played?: string;
 }
 
 /** The engine's ranking; the "chosen" candidate is its move. */
@@ -481,4 +486,24 @@ export interface AnalyzeResponse extends MoveAnalysis {
     opponentRackKnown: boolean;
     tilesOnBoard: number;
   };
+  /**
+   * Present when the request named a `played` move: that move as a
+   * candidate (with `sim` if it was simulated; `equity` null if the
+   * generator does not produce it), or null when it is not legal here.
+   */
+  played?: (Omit<Candidate, 'equity'> & { equity: number | null }) | null;
+  /** Why `played` is null. */
+  playedError?: string;
+}
+
+/** POST /api/gcg: a GCG record replayed without starting a game. */
+export interface ParseGcgRequest {
+  gcg: string;
+}
+
+/** The replay's events, as the event stream of a "replay" game would carry them. */
+export interface ParseGcgResponse {
+  start: GameStartEvent;
+  moves: GameMoveEvent[];
+  end: GameEndEvent;
 }

@@ -48,3 +48,24 @@ export function addRackToCounts(counts: PerLetter, rack: string): PerLetter {
   for (const tile of rack) out[tile] = (out[tile] ?? 0) + 1;
   return out;
 }
+
+/**
+ * Splits the tiles a move takes ('?' for a blank) between what is known of
+ * the mover's rack and tiles from outside it. Returns the rack as now
+ * known (the known tiles plus those from outside, when they fit) and the
+ * leave as far as it is known.
+ */
+export function accountTiles(known: string, used: string): { rackBefore: string; leave: string } {
+  const remaining = [...known];
+  let outside = '';
+  for (const tile of used) {
+    const index = remaining.indexOf(tile);
+    if (index >= 0) remaining.splice(index, 1);
+    else outside += tile;
+  }
+  const before = known + outside;
+  return {
+    rackBefore: sortRack(before.length <= RACK_SIZE ? before : known),
+    leave: sortRack(remaining.join('')),
+  };
+}

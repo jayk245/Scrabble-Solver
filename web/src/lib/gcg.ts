@@ -12,6 +12,12 @@ export interface GcgMove {
   move: MoveInfo;
   /** The mover's total after the move. */
   cumulative: number;
+  /**
+   * Imported records: a withdrawn phony ("--") or a score adjustment, whose
+   * `move` is a stand-in carrying only the points; `label` is its text.
+   */
+  kind?: 'play' | 'withdrawn' | 'adjustment';
+  label?: string;
 }
 
 /** GCG nicknames are single words. */
@@ -20,7 +26,10 @@ function nickname(name: string, fallback: string): string {
   return cleaned || fallback;
 }
 
-function moveText(move: MoveInfo): string {
+function moveText(move: MoveInfo, kind: GcgMove['kind'], label: string | undefined): string {
+  if (kind === 'withdrawn') return '--';
+  // "(challenge) +5" or "(time) -10": the keyword alone; the points follow.
+  if (kind === 'adjustment') return (label ?? move.notation).split(' ')[0] ?? '';
   if (move.type !== 'place' || move.row === undefined || move.col === undefined) {
     return move.notation;
   }
@@ -28,7 +37,8 @@ function moveText(move: MoveInfo): string {
   return `${coordinate(move.row, move.col, move.direction ?? 'across')} ${word}`;
 }
 
-function tilesPlayed(move: MoveInfo): string {
+/** The tiles a move takes from the rack, '?' for a blank. */
+export function tilesPlayed(move: MoveInfo): string {
   if (move.type === 'exchange') return move.word;
   return move.tiles
     .filter((tile) => !tile.playThrough)
@@ -55,10 +65,10 @@ export function toGcg(
       `#note Started from an edited position (scores ${a}-${b}); the board setup is not recorded.`,
     );
   }
-  for (const { player, rack, move, cumulative } of moves) {
+  for (const { player, rack, move, cumulative, kind, label } of moves) {
     const signed = move.score >= 0 ? `+${move.score}` : `${move.score}`;
     lines.push(
-      `>${nicks[player]}: ${rack || tilesPlayed(move) || '-'} ${moveText(move)} ${signed} ${cumulative}`,
+      `>${nicks[player]}: ${rack || tilesPlayed(move) || '-'} ${moveText(move, kind, label)} ${signed} ${cumulative}`,
     );
   }
   return `${lines.join('\n')}\n`;

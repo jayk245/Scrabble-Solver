@@ -48,6 +48,21 @@ counts, memory size and build/load times. Words are uppercased and filtered
 to 2-15 letters A-Z (168,551 of ENABLE's 172,823 entries). The ENABLE
 integration tests are skipped if the list has not been fetched.
 
+For analysing real games, use a tournament-style list. WGPO Official Words
+2024 (WOW24, 195,383 words) is free for non-commercial use, so it is
+downloaded rather than committed:
+
+```sh
+scripts/fetch_lexicon.sh wow24
+./build/release/apps/server/scrabble_server --lexicon data/lexica/wow24.txt
+```
+
+The page header shows which lexicon the server loaded. WOW24 is close to,
+but not the same as, NASPA's NWL2023; analyse each game with the lexicon it
+was played under (see `data/lexica/README.md`). Every app takes
+`--lexicon PATH` with any one-word-per-line file. The bot's learned leave
+values were trained with ENABLE and are used unchanged with other lists.
+
 ## Web UI
 
 Three tabs in the browser: a **Solver**, an analysis board that tells you

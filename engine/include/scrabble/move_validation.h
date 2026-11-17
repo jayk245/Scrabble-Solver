@@ -8,6 +8,7 @@
 #define SCRABBLE_MOVE_VALIDATION_H_
 
 #include <cstdint>
+#include <string>
 #include <string_view>
 
 #include "scrabble/board.h"
@@ -40,6 +41,10 @@ enum class MoveError : std::uint8_t {
 // Human-readable reason, e.g. for the web UI.
 std::string_view MoveErrorMessage(MoveError error);
 
+// Like MoveErrorMessage(), but names the offending word for lexicon errors
+// when it is known, e.g. "cross-word ZA is not in the lexicon".
+std::string DescribeMoveError(MoveError error, std::string_view invalid_word);
+
 // Checks that `move` is legal for a player holding `rack` on `board`.
 //
 // Placements: geometry (on the board, no rack tile on an occupied square),
@@ -54,11 +59,15 @@ std::string_view MoveErrorMessage(MoveError error);
 // letter and blank flag from the board (resolving '.' placeholders) and
 // `score` is set to Score(board, move). On failure `move` is unchanged.
 //
+// When the move fails with kInvalidWord or kInvalidCrossWord and
+// `invalid_word` is non-null, it receives the rejected word in uppercase.
+//
 // Single-tile placements must name the direction in which they form a word
 // of at least two letters; when they form words both ways either direction
 // is accepted (the move generator reports such plays across only).
 MoveError ValidateMove(const Board& board, const Gaddag& gaddag,
-                       const Rack& rack, Move& move);
+                       const Rack& rack, Move& move,
+                       std::string* invalid_word = nullptr);
 
 }  // namespace scrabble
 

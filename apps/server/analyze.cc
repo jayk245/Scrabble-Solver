@@ -152,9 +152,10 @@ std::optional<PlayedMove> PlayedField(const Json& request, const Board& board,
   if (value == nullptr) return std::nullopt;
   if (!value->is_string()) BadSetting("played", "a move in notation");
   Move move = MoveFromNotation(value->get_ref<const std::string&>());
-  const MoveError error = ValidateMove(board, gaddag, rack, move);
+  std::string invalid_word;
+  const MoveError error = ValidateMove(board, gaddag, rack, move, &invalid_word);
   if (error != MoveError::kOk) {
-    return PlayedMove{std::nullopt, std::string(MoveErrorMessage(error))};
+    return PlayedMove{std::nullopt, DescribeMoveError(error, invalid_word)};
   }
   return PlayedMove{move, {}};
 }

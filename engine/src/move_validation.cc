@@ -3,11 +3,20 @@
 #include <array>
 #include <cstddef>
 #include <span>
+#include <string>
 
 #include "scrabble/scoring.h"
 
 namespace scrabble {
 namespace {
+
+// Spells `letters` in uppercase for error messages.
+std::string Spell(std::span<const Letter> letters) {
+  std::string out;
+  out.reserve(letters.size());
+  for (const Letter letter : letters) out.push_back(LetterToChar(letter));
+  return out;
+}
 
 bool Occupied(const Board& board, int row, int col) {
   return InBounds(row, col) && !board.At(row, col).IsEmpty();
@@ -31,8 +40,10 @@ MoveError ValidateExchange(const Rack& rack, const Move& move) {
 }
 
 // Validates `move` (a placement) and canonicalises `resolved`, a copy of it.
+// On a lexicon error the rejected word is stored in `invalid_word`, if set.
 MoveError ValidatePlacement(const Board& board, const Gaddag& gaddag,
-                            const Rack& rack, Move& resolved) {
+                            const Rack& rack, Move& resolved,
+                            std::string* invalid_word) {
   const int n = resolved.num_tiles;
   if (n == 0) return MoveError::kEmptyMove;
   const int dr = resolved.direction == Direction::kDown ? 1 : 0;
@@ -96,8 +107,10 @@ MoveError ValidatePlacement(const Board& board, const Gaddag& gaddag,
     if (!connected) return MoveError::kNotConnected;
   }
 
-  if (!gaddag.ContainsLetters(
-          std::span<const Letter>(word.data(), static_cast<std::size_t>(n)))) {
+  const std::span<const Letter> main_word(word.data(),
+                                          static_cast<std::size_t>(n));
+  if (!gaddag.ContainsLetters(main_word)) {
+    if (invalid_word != nullptr) *invalid_word = Spell(main_word);
     return MoveError::kInvalidWord;
   }
 
@@ -122,8 +135,9 @@ MoveError ValidatePlacement(const Board& board, const Gaddag& gaddag,
       cross[length++] = k == 0 ? tile.letter()
                                : board.At(row + k * pr, col + k * pc).letter;
     }
-    if (!gaddag.ContainsLetters(
-            std::span<const Letter>(cross.data(), length))) {
+    const std::span<const Letter> cross_word(cross.data(), length);
+    if (!gaddag.ContainsLetters(cross_word)) {
+      if (invalid_word != nullptr) *invalid_word = Spell(cross_word);
       return MoveError::kInvalidCrossWord;
     }
   }
@@ -160,8 +174,22 @@ std::string_view MoveErrorMessage(MoveError error) {
   return "unknown error";
 }
 
+std::string DescribeMoveError(MoveError error, std::string_view invalid_word) {
+  if (!invalid_word.empty()) {
+    if (error == MoveError::kInvalidWord) {
+      return std::string(invalid_word) + " is not in the lexicon";
+    }
+    if (error == MoveError::kInvalidCrossWord) {
+      return "cross-word " + std::string(invalid_word) +
+             " is not in the lexicon";
+    }
+  }
+  return std::string(MoveErrorMessage(error));
+}
+
 MoveError ValidateMove(const Board& board, const Gaddag& gaddag,
-                       const Rack& rack, Move& move) {
+                       const Rack& rack, Move& move,
+                       std::string* invalid_word) {
   switch (move.type) {
     case MoveType::kPass:
       return MoveError::kOk;
@@ -171,7 +199,7 @@ MoveError ValidateMove(const Board& board, const Gaddag& gaddag,
       break;
   }
   Move resolved = move;
-  const MoveError error = ValidatePlacement(board, gaddag, rack, resolved);
+  const MoveError error = ValidatePlacement(board, gaddag, rack, resolved, invalid_word);
   if (error != MoveError::kOk) return error;
   resolved.score = Score(board, resolved);
   move = resolved;

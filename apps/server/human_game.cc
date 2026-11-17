@@ -348,9 +348,16 @@ ApiResponse HumanGame::Play(const Json& request, Clock::time_point now) {
   switch (result.error) {
     case PlayError::kOk:
       break;
-    case PlayError::kIllegalMove:
+    case PlayError::kIllegalMove: {
+      // Game::Play reports only the error code; validate again against the
+      // pre-move position to name the rejected word.
+      std::string invalid_word;
+      Move retry = move;
+      ValidateMove(before.board(), before.lexicon(), before.rack(human_seat_),
+                   retry, &invalid_word);
       return ErrorResponse(422, MoveErrorCode(result.move_error),
-                           MoveErrorMessage(result.move_error));
+                           DescribeMoveError(result.move_error, invalid_word));
+    }
     case PlayError::kExchangeNotAllowed:
       return ErrorResponse(422, "exchange_not_allowed",
                            PlayErrorMessage(result));

@@ -98,6 +98,29 @@ TEST(ValidateMoveTest, Words) {
   EXPECT_EQ(ax.score, 39);
 }
 
+TEST(ValidateMoveTest, NamesTheRejectedWord) {
+  const Board board = MakeBoard({"8H HELLO"});
+  std::string word;
+  Move main_word = ParseOrDie("8H HLLEO");
+  EXPECT_EQ(ValidateMove(Board(), Lexicon(), RackOrDie("HELLO"), main_word,
+                         &word),
+            MoveError::kInvalidWord);
+  EXPECT_EQ(word, "HLLEO");
+  EXPECT_EQ(DescribeMoveError(MoveError::kInvalidWord, word),
+            "HLLEO is not in the lexicon");
+
+  Move cross_word = ParseOrDie("9I EH");
+  EXPECT_EQ(ValidateMove(board, Lexicon(), RackOrDie("EH"), cross_word, &word),
+            MoveError::kInvalidCrossWord);
+  EXPECT_EQ(word, "EE");
+  EXPECT_EQ(DescribeMoveError(MoveError::kInvalidCrossWord, word),
+            "cross-word EE is not in the lexicon");
+
+  // Without a word the generic message is used.
+  EXPECT_EQ(DescribeMoveError(MoveError::kInvalidCrossWord, ""),
+            "cross-word is not in the lexicon");
+}
+
 TEST(ValidateMoveTest, SingleTileNeedsAWordInItsDirection) {
   const Board board = MakeBoard({"8H HELLO"});
   // A under H forms only HA, vertically.

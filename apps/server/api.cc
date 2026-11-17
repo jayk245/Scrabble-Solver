@@ -161,13 +161,17 @@ ApiResponse Api::Validate(std::string_view body) const {
     Move move = MoveField(request);
     const std::optional<Rack> rack = OptionalRackField(request);
     const Rack effective = rack.value_or(RackForMove(move));
-    const MoveError error = ValidateMove(board, *gaddag_, effective, move);
+    std::string invalid_word;
+    const MoveError error =
+        ValidateMove(board, *gaddag_, effective, move, &invalid_word);
     if (error != MoveError::kOk) {
       // An illegal move is a successful answer to "is this legal?", hence
       // 200 rather than an error status.
-      return ApiResponse{200, Json{{"valid", false},
-                                   {"error", MoveErrorCode(error)},
-                                   {"message", MoveErrorMessage(error)}}};
+      Json response = {{"valid", false},
+                       {"error", MoveErrorCode(error)},
+                       {"message", DescribeMoveError(error, invalid_word)}};
+      if (!invalid_word.empty()) response["word"] = invalid_word;
+      return ApiResponse{200, std::move(response)};
     }
     return ApiResponse{
         200, Json{{"valid", true},
@@ -181,10 +185,12 @@ ApiResponse Api::Play(std::string_view body) const {
     Board board = BoardField(request);
     Move move = MoveField(request);
     const std::optional<Rack> rack = OptionalRackField(request);
-    const MoveError error =
-        ValidateMove(board, *gaddag_, rack.value_or(RackForMove(move)), move);
+    std::string invalid_word;
+    const MoveError error = ValidateMove(
+        board, *gaddag_, rack.value_or(RackForMove(move)), move, &invalid_word);
     if (error != MoveError::kOk) {
-      return Error(422, MoveErrorCode(error), MoveErrorMessage(error));
+      return Error(422, MoveErrorCode(error),
+                   DescribeMoveError(error, invalid_word));
     }
     if (move.type == MoveType::kPlace) PlaceTiles(board, move);
     Json response = {{"board", BoardToJson(board)},

@@ -340,7 +340,9 @@ class Replayer {
     const Rack needed = RackForMove(move);
     const Rack rack = event.rack.value_or(needed);
     Move checked = move;
-    const MoveError error = ValidateMove(board_, gaddag_, rack, checked);
+    std::string invalid_word;
+    const MoveError error =
+        ValidateMove(board_, gaddag_, rack, checked, &invalid_word);
     if (error == MoveError::kOk) {
       move = checked;
       rack_ok = event.rack.has_value();
@@ -359,7 +361,7 @@ class Replayer {
     }
     move.score = Score(board_, move);
     rack_ok = event.rack.has_value() && RackHolds(rack, RackForMove(move));
-    return std::string(MoveErrorMessage(error));
+    return DescribeMoveError(error, invalid_word);
   }
 
   Json BaseEvent(std::size_t i, const GcgEvent& event, std::string_view kind,

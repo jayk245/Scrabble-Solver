@@ -29,8 +29,11 @@ export interface SolverResultsProps {
   /** Null when solving is possible; otherwise why not. */
   blocked: string | null;
   onSolve: () => void;
-  autoSolve: boolean;
-  onAutoSolve: (on: boolean) => void;
+  /** Solve automatically whenever the position has a complete rack. */
+  engineOn: boolean;
+  onEngineOn: (on: boolean) => void;
+  /** The move made from this position in the game, marked in the list. */
+  playedNotation?: string;
   hovered: Candidate | null;
   onHover: (candidate: Candidate | null) => void;
   onPlay: (candidate: Candidate) => void;
@@ -47,8 +50,9 @@ export function SolverResults({
   onEffort,
   blocked,
   onSolve,
-  autoSolve,
-  onAutoSolve,
+  engineOn,
+  onEngineOn,
+  playedNotation,
   hovered,
   onHover,
   onPlay,
@@ -58,8 +62,20 @@ export function SolverResults({
   return (
     <section className="panel solver-panel" aria-labelledby="solver-heading">
       <div className="panel-header">
-        <h2 id="solver-heading">Best move</h2>
-        {analysis && <span className="status-text">{METHOD_LABEL[analysis.method]}</span>}
+        <h2 id="solver-heading">Engine</h2>
+        <label
+          className={`switch${engineOn ? ' is-on' : ''}`}
+          title="Solve every position with a complete rack as soon as you reach it; answers are cached per position"
+        >
+          <input
+            type="checkbox"
+            role="switch"
+            checked={engineOn}
+            onChange={(event) => onEngineOn(event.target.checked)}
+          />
+          <span className="switch-track" aria-hidden="true" />
+          Engine {engineOn ? 'on' : 'off'}
+        </label>
       </div>
       <div className="solver-controls">
         <div className="segmented" role="radiogroup" aria-label="Search effort">
@@ -85,14 +101,12 @@ export function SolverResults({
         >
           {loading ? 'Solving…' : 'Solve'}
         </button>
-        <label className="checkbox" title="Solve each new position as soon as its rack is entered">
-          <input
-            type="checkbox"
-            checked={autoSolve}
-            onChange={(event) => onAutoSolve(event.target.checked)}
-          />
-          Auto
-        </label>
+        {analysis && (
+          <span className="status-text">
+            {METHOD_LABEL[analysis.method]}
+            {analysis.effort !== effort && ` · ${analysis.effort}`}
+          </span>
+        )}
       </div>
       {blocked && !analysis && <p className="hint">{blocked}</p>}
       {error && <p className="verdict is-illegal">{error}</p>}
@@ -187,6 +201,8 @@ export function SolverResults({
             showSim={analysis.method === 'simulation'}
             chosenLabel="best"
             action={{ label: 'Play', onClick: onPlay, disabled: playing }}
+            markedNotation={playedNotation}
+            markedLabel="played"
           />
           <p className="hint">
             {analysis.method === 'simulation'

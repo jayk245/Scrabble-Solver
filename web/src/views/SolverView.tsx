@@ -1,28 +1,70 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
 
 import { api } from '../api/client';
-import type { Candidate, Effort, MoveInfo, Rules } from '../api/types';
+import type {
+  AnalyzeRequest,
+  AnalyzeResponse,
+  Candidate,
+  Effort,
+  GameMoveEvent,
+  GameStartEvent,
+  MoveInfo,
+  Rules,
+} from '../api/types';
 import { Board } from '../components/Board';
+import { GameReviewPanel } from '../components/GameReviewPanel';
+import { ImportPanel } from '../components/ImportPanel';
 import { Legend } from '../components/Legend';
 import { MoveChecker } from '../components/MoveChecker';
 import { MoveList } from '../components/MoveList';
+import { MoveTree } from '../components/MoveTree';
+import { PlacementVerdict } from '../components/PlacementVerdict';
+import { PlayerRack } from '../components/PlayerRack';
 import { PositionPanel } from '../components/PositionPanel';
-import { RackInput } from '../components/RackInput';
-import { SequenceInput } from '../components/SequenceInput';
-import { SolverHistoryPanel } from '../components/SolverHistoryPanel';
+import { Scoreboard } from '../components/Scoreboard';
 import { SolverResults } from '../components/SolverResults';
 import { UnseenTiles } from '../components/UnseenTiles';
+import { useGameReview } from '../hooks/useGameReview';
+import { useGameTree } from '../hooks/useGameTree';
 import { useMoves } from '../hooks/useMoves';
-import { useSolverHistory } from '../hooks/useSolverHistory';
-import { advance, EMPTY, setSquare, squareAt, squareName, type Cursor } from '../lib/board';
-import { downloadText, toGcg } from '../lib/gcg';
-import { drawRack, RACK_SIZE, sortRack } from '../lib/rack';
-import { boardCounts, unseenSummary } from '../lib/tiles';
+import { usePlacement } from '../hooks/usePlacement';
+import { advance, EMPTY, setSquare, squareAt, squareName } from '../lib/board';
+import {
+  analyzeRequest,
+  lookupAnalysis,
+  rackComplete,
+  storeAnalysis,
+  type AnalysisCache,
+} from '../lib/engine';
+import {
+  currentNode,
+  descendantCount,
+  isOnMainLine,
+  mainLine,
+  nodeAt,
+  other,
+  plyOf,
+  rackBefore,
+  SCORELESS_TURNS_TO_END,
+  setSeat,
+  type GameTree,
+} from '../lib/gameTree';
+import { downloadText, tilesPlayed, toGcg } from '../lib/gcg';
+import { treeFromEvents } from '../lib/importGame';
+import { accountTiles, drawRack, normaliseRack, RACK_SIZE, sortRack } from '../lib/rack';
+import { GRADE_LABEL, reviewMainLine, wentOut, type MoveGrade } from '../lib/review';
+import { unseenSummary } from '../lib/tiles';
 
-/** Waits this long after the last edit before auto-solving. */
-const AUTO_SOLVE_DELAY_MS = 500;
-const TOTAL_TILES = 100;
-const SCORELESS_TURNS_TO_END = 6;
+/** Waits this long on a position before the engine starts on it. */
+const ENGINE_DELAY_MS = 300;
+/** The bag must hold a full rack for an exchange. */
+const MIN_BAG_FOR_EXCHANGE = 7;
+
+/** A game handed over by another tab ("Open in Solver"). */
+export type SolverImport =
+  { id: number; gcg: string } | { id: number; start: GameStartEvent; moves: GameMoveEvent[] };
+
+type Mode = 'moves' | 'edit';
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -36,23 +78,39 @@ function isTextField(target: EventTarget | null): boolean {
   );
 }
 
-/**
- * The position solver: set up a game between two players, ask the engine
- * for the best move, play it (or any other), enter the next rack, repeat.
- *
- * The whole game lives in one reducer (useSolverHistory) as a list of
- * immutable positions; the server is stateless here. Each request carries
- * the full position, and moves go through /api/play so the engine
- * validates and scores them.
- */
-export function SolverView({ rules }: { rules: Rules }) {
-  const [history, dispatch] = useSolverHistory();
-  const position = history.positions[history.index]!;
-  const { board, names, scores, toMove, racks, opponentKnown, analysis } = position;
-  const opponent: 0 | 1 = toMove === 0 ? 1 : 0;
-  const rack = racks[toMove];
+function hasMoves(tree: GameTree): boolean {
+  return Object.keys(tree.nodes).length > 1;
+}
 
-  const [cursor, setCursor] = useState<Cursor | null>(null);
+/**
+ * The analysis board: enter or import a game, step through it, branch
+ * into variations, and ask the engine for the best move anywhere, the way
+ * a chess analysis board works.
+ *
+ * State is split by lifetime. The move tree (useGameTree) is the game
+ * itself; the analysis cache (lib/engine.ts) maps positions to the
+ * engine's answers and outlives edits; everything else is transient UI.
+ * The server stays stateless: each request carries the full position,
+ * and moves go through /api/play so the engine validates and scores them.
+ */
+export function SolverView({
+  rules,
+  incoming,
+}: {
+  rules: Rules;
+  /** A game to load, from the Play tab or the Game viewer. */
+  incoming: SolverImport | null;
+}) {
+  const [tree, dispatch] = useGameTree();
+  const node = currentNode(tree);
+  const { board, scores, toMove, racks, opponentKnown } = node;
+  const names = tree.names;
+  const opponent = other(toMove);
+  const rack = racks[toMove];
+  const moverName = names[toMove] || `Player ${toMove + 1}`;
+
+  const [mode, setMode] = useState<Mode>('moves');
+  const [showRacks, setShowRacks] = useState(true);
   const [blankMode, setBlankMode] = useState(false);
   const [hovered, setHovered] = useState<MoveInfo | null>(null);
   const [hoveredCandidate, setHoveredCandidate] = useState<Candidate | null>(null);
@@ -60,14 +118,14 @@ export function SolverView({ rules }: { rules: Rules }) {
   const [checked, setChecked] = useState<MoveInfo | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [effort, setEffort] = useState<Effort>('normal');
-  const [autoSolve, setAutoSolve] = useState(false);
-  const [solving, setSolving] = useState(false);
-  const [solveError, setSolveError] = useState<string | null>(null);
+  const [engineOn, setEngineOn] = useState(false);
   const [playing, setPlaying] = useState(false);
+  const [exchange, setExchange] = useState<Set<number> | null>(null);
+  const [exchangeText, setExchangeText] = useState('');
   const boardRef = useRef<HTMLDivElement>(null);
-  const solveController = useRef<AbortController | null>(null);
 
-  const moves = useMoves(board, rack);
+  // ---- Position facts ---------------------------------------------------
+
   const unseen = useMemo(
     () =>
       unseenSummary(board, rack, rules.tileCounts, {
@@ -75,83 +133,125 @@ export function SolverView({ rules }: { rules: Rules }) {
       }),
     [board, rack, racks, opponent, opponentKnown, rules.tileCounts],
   );
+  const complete = rackComplete(node, rules.tileCounts);
+  const ended = wentOut(tree, node) || node.scoreless >= SCORELESS_TURNS_TO_END;
+  const mainChild = node.children[0] ? nodeAt(tree, node.children[0]) : null;
+  const playedHere =
+    mainChild?.origin?.kind === 'play' ? mainChild.origin.move.notation : undefined;
 
-  // A previous mover who emptied their rack with at most a rack's worth of
-  // tiles off the board went out (the bag must be empty).
-  const tilesOffBoard =
-    TOTAL_TILES - Object.values(boardCounts(board)).reduce((sum, n) => sum + n, 0);
-  const origin = position.origin;
-  const wentOut =
-    origin !== null &&
-    origin.rack !== '' &&
-    origin.move.type === 'place' &&
-    racks[origin.player] === '' &&
-    tilesOffBoard <= RACK_SIZE;
-  const gameOver = wentOut || position.scoreless >= SCORELESS_TURNS_TO_END;
+  // ---- Engine: cached answers per position ------------------------------
 
-  const blocked = gameOver
+  const [cache, setCache] = useState<AnalysisCache>(() => new Map());
+  const store = useCallback(
+    (request: AnalyzeRequest, result: AnalyzeResponse) =>
+      setCache((current) => storeAnalysis(current, request, result)),
+    [],
+  );
+  const request = useMemo(
+    () => ({ ...analyzeRequest(node, effort), played: playedHere }),
+    [node, effort, playedHere],
+  );
+  const requestKey = JSON.stringify(request);
+  const cached = lookupAnalysis(cache, request);
+  const analysis = cached?.result ?? null;
+
+  const [solvingKey, setSolvingKey] = useState<string | null>(null);
+  const [solveError, setSolveError] = useState<{ key: string; message: string } | null>(null);
+  const solveController = useRef<AbortController | null>(null);
+  const review = useGameReview(tree, cache, store, rules.tileCounts);
+
+  const blocked = ended
     ? 'The game is over.'
     : rack.length === 0
-      ? `Enter ${names[toMove] || 'the mover'}'s rack to solve.`
+      ? `Enter ${moverName}'s rack to solve.`
       : unseen.overused
         ? `The position uses more ${[...unseen.overused].join(', ')} than the bag holds.`
-        : null;
-
-  // Previews and in-flight solves belong to one position.
-  useEffect(() => {
-    setHovered(null);
-    setHoveredCandidate(null);
-    setSelected(null);
-    setChecked(null);
-    setSolveError(null);
-    return () => solveController.current?.abort();
-  }, [position]);
+        : review.running
+          ? 'The game review is using the engine.'
+          : null;
 
   const solve = useCallback(() => {
     if (blocked) return;
     solveController.current?.abort();
     const controller = new AbortController();
     solveController.current = controller;
-    const index = history.index;
-    setSolving(true);
+    setSolvingKey(requestKey);
     setSolveError(null);
     api
-      .analyze(
-        {
-          board,
-          rack,
-          opponentRack: opponentKnown ? racks[opponent] : undefined,
-          score: scores[toMove],
-          opponentScore: scores[opponent],
-          scorelessTurns: Math.min(position.scoreless, SCORELESS_TURNS_TO_END - 1),
-          effort,
-        },
-        controller.signal,
-      )
-      .then((result) => dispatch({ type: 'solved', index, position, analysis: result }))
+      .analyze(request, controller.signal)
+      .then((result) => store(request, result))
       .catch((error: unknown) => {
-        if (!controller.signal.aborted) setSolveError(errorMessage(error));
+        if (!controller.signal.aborted) {
+          setSolveError({ key: requestKey, message: errorMessage(error) });
+        }
       })
       .finally(() => {
-        if (solveController.current === controller) setSolving(false);
+        if (solveController.current === controller) {
+          solveController.current = null;
+          setSolvingKey(null);
+        }
       });
-  }, [blocked, board, rack, racks, opponent, opponentKnown, scores, toMove, position, effort, history.index, dispatch]);
+  }, [blocked, request, requestKey, store]);
 
-  // Auto-solve once the mover holds a full rack (or every tile left).
-  const rackComplete = rack.length >= RACK_SIZE || unseen.bagCount === 0;
+  // Leaving a position cancels its search: the fetch is aborted, which
+  // closes the connection, and the server drops the search if it is still
+  // queued, so the next position is not kept waiting.
+  useEffect(
+    () => () => {
+      solveController.current?.abort();
+      solveController.current = null;
+      setSolvingKey(null);
+    },
+    [requestKey],
+  );
+
+  // Engine on: solve each position with a complete rack once the user
+  // settles on it, unless it is cached or just failed.
+  const failedHere = solveError?.key === requestKey;
   useEffect(() => {
-    if (!autoSolve || blocked || analysis || !rackComplete) return;
-    const timer = window.setTimeout(solve, AUTO_SOLVE_DELAY_MS);
+    if (!engineOn || blocked || !complete || cached || failedHere) return;
+    const timer = window.setTimeout(solve, ENGINE_DELAY_MS);
     return () => window.clearTimeout(timer);
-  }, [autoSolve, blocked, analysis, rackComplete, solve]);
+  }, [engineOn, blocked, complete, cached, failedHere, solve]);
 
+  // ---- Review ----------------------------------------------------------
+
+  const reviewed = useMemo(
+    () => reviewMainLine(tree, cache, rules.tileCounts, rules.tileValues),
+    [tree, cache, rules.tileCounts, rules.tileValues],
+  );
+  const grades = useMemo(() => {
+    const map = new Map<string, MoveGrade>();
+    for (const move of reviewed) if (move.grade) map.set(move.nodeId, move.grade);
+    return map;
+  }, [reviewed]);
+  const currentGrade = grades.get(node.id);
+
+  // ---- Recording moves -------------------------------------------------
+
+  /**
+   * Plays `notation` from the current position through /api/play and
+   * records it. With the rack known in full the server checks the tiles
+   * come from it; otherwise only the board and the words are checked, and
+   * the tiles the move used outside the known part of the rack are added
+   * to it, since the player evidently held them.
+   */
   const playNotation = async (notation: string): Promise<string | null> => {
+    if (ended) return 'The game is over.';
     setPlaying(true);
     try {
-      const result = await api.play({ board, rack: rack || undefined, move: notation });
-      dispatch({ type: 'play', move: result.move, board: result.board, leave: result.rack ?? '' });
+      const strict = complete;
+      const result = await api.play({ board, rack: strict ? rack : undefined, move: notation });
+      const known = strict
+        ? { rackBefore: rack, leave: result.rack ?? '' }
+        : accountTiles(rack, tilesPlayed(result.move));
+      dispatch({
+        type: 'record',
+        recorded: { move: result.move, board: result.board, ...known },
+      });
       setNotice(null);
-      setCursor(null);
+      setExchange(null);
+      setExchangeText('');
       return null;
     } catch (error) {
       return errorMessage(error);
@@ -160,30 +260,79 @@ export function SolverView({ rules }: { rules: Rules }) {
     }
   };
 
+  const placement = usePlacement({
+    board,
+    rack,
+    strict: complete,
+    enabled: mode === 'moves' && !ended && !playing && exchange === null,
+    blankMode,
+    onSubmit: (notation) => {
+      void playNotation(notation).then(setNotice);
+    },
+  });
+  const { cursor, setCursor } = placement;
+
   const playCandidate = async (candidate: Candidate) => {
     setNotice(await playNotation(candidate.move.notation));
   };
 
+  // Pasted moves are played one after another from the current position.
+  // This render's `node` does not change during the loop, so the loop
+  // tracks the position itself; the reducer applies each recorded move to
+  // the position the previous one produced.
   const applySequence = async (notations: string[]) => {
-    let current = board;
     let applied = 0;
+    let at = { board, racks, toMove };
     for (const notation of notations) {
       try {
-        const result = await api.play({ board: current, move: notation });
-        dispatch({ type: 'play', move: result.move, board: result.board, leave: '' });
-        current = result.board;
+        const result = await api.play({ board: at.board, move: notation });
+        const known = accountTiles(at.racks[at.toMove], tilesPlayed(result.move));
+        dispatch({
+          type: 'record',
+          recorded: { move: result.move, board: result.board, ...known },
+        });
+        at = {
+          board: result.board,
+          racks: setSeat(at.racks, at.toMove, known.leave),
+          toMove: other(at.toMove),
+        };
         applied++;
-      } catch (failure) {
-        return { applied, error: errorMessage(failure) };
+      } catch (error) {
+        return { applied, error: errorMessage(error) };
       }
     }
     return { applied, error: null };
   };
 
-  const setRack = (next: string) => {
-    const updated = toMove === 0 ? ([next, racks[1]] as const) : ([racks[0], next] as const);
-    dispatch({ type: 'edit', patch: { racks: [updated[0], updated[1]] } });
+  const pass = () => {
+    if (window.confirm(`Record a pass for ${moverName}?`)) void playNotation('-').then(setNotice);
   };
+
+  const confirmExchange = () => {
+    const letters = complete
+      ? [...(exchange ?? [])].map((i) => rack[i]).join('')
+      : normaliseRack(exchangeText);
+    if (!letters) {
+      setNotice('Choose the tiles exchanged.');
+      return;
+    }
+    void playNotation(`-${letters}`).then(setNotice);
+  };
+
+  const onRackTile = (index: number) => {
+    boardRef.current?.focus();
+    if (exchange) {
+      const next = new Set(exchange);
+      if (next.has(index)) next.delete(index);
+      else next.add(index);
+      setExchange(next);
+      return;
+    }
+    placement.clickRackTile(index);
+  };
+
+  const setRack = (next: string) =>
+    dispatch({ type: 'racks', patch: { racks: setSeat(racks, toMove, next) } });
 
   // Tops the rack up from the unseen pool (or deals a fresh one when full),
   // standing in for the tiles the player really drew.
@@ -197,60 +346,28 @@ export function SolverView({ rules }: { rules: Rules }) {
     setRack(sortRack(keep + drawRack(pool, RACK_SIZE - keep.length)));
   };
 
-  const exportGcg = () => {
-    const record = history.positions.flatMap((entry) =>
-      entry.origin
-        ? [
-            {
-              player: entry.origin.player,
-              rack: entry.origin.rack,
-              move: entry.origin.move,
-              cumulative: entry.scores[entry.origin.player],
-            },
-          ]
-        : [],
-    );
-    const start = history.positions[0]!;
-    const text = toGcg(names, record, {
-      title: 'Solver session',
-      startScores: start.scores,
-      customStart: start.board.some((line) => /[^.]/.test(line)),
-    });
-    downloadText('solver-game.gcg', text);
+  // ---- Edit board mode ---------------------------------------------------
+
+  const enterEditMode = () => {
+    const later = descendantCount(tree, node.id);
+    if (
+      later > 0 &&
+      !window.confirm(
+        `Editing this position discards the ${later} move${later === 1 ? '' : 's'} after it. Continue?`,
+      )
+    ) {
+      return;
+    }
+    if (later > 0) dispatch({ type: 'setup', patch: {} });
+    placement.recallAll();
+    setExchange(null);
+    setMode('edit');
   };
 
-  // Ctrl/Cmd+Z undoes the last move; Alt+arrows walk the history.
-  useEffect(() => {
-    const onKey = (event: globalThis.KeyboardEvent) => {
-      if (isTextField(event.target)) return;
-      if ((event.ctrlKey || event.metaKey) && event.key === 'z') {
-        event.preventDefault();
-        dispatch({ type: 'undo' });
-      } else if (event.altKey && event.key === 'ArrowLeft') {
-        event.preventDefault();
-        dispatch({ type: 'goto', index: history.index - 1 });
-      } else if (event.altKey && event.key === 'ArrowRight') {
-        event.preventDefault();
-        dispatch({ type: 'goto', index: history.index + 1 });
-      }
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [dispatch, history.index]);
-
-  const selectSquare = useCallback((row: number, col: number) => {
-    boardRef.current?.focus();
-    setCursor((current) =>
-      current && current.row === row && current.col === col
-        ? { ...current, direction: current.direction === 'across' ? 'down' : 'across' }
-        : { row, col, direction: current?.direction ?? 'across' },
-    );
-  }, []);
-
   const editBoard = (row: number, col: number, char: string) =>
-    dispatch({ type: 'edit', patch: { board: setSquare(board, row, col, char) } });
+    dispatch({ type: 'setup', patch: { board: setSquare(board, row, col, char) } });
 
-  const onBoardKey = (event: KeyboardEvent<HTMLDivElement>) => {
+  const onEditKey = (event: KeyboardEvent<HTMLDivElement>) => {
     if (!cursor || event.ctrlKey || event.metaKey || event.altKey) return;
     const { key } = event;
     if (/^[a-zA-Z]$/.test(key)) {
@@ -269,8 +386,8 @@ export function SolverView({ rules }: { rules: Rules }) {
       setCursor({ ...cursor, direction: cursor.direction === 'across' ? 'down' : 'across' });
     } else if (key.startsWith('Arrow')) {
       const across = key === 'ArrowLeft' || key === 'ArrowRight';
-      const step = key === 'ArrowLeft' || key === 'ArrowUp' ? -1 : 1;
-      const moved = advance({ ...cursor, direction: across ? 'across' : 'down' }, step);
+      const delta = key === 'ArrowLeft' || key === 'ArrowUp' ? -1 : 1;
+      const moved = advance({ ...cursor, direction: across ? 'across' : 'down' }, delta);
       setCursor({ ...moved, direction: cursor.direction });
     } else if (key === 'Escape') {
       setCursor(null);
@@ -280,112 +397,542 @@ export function SolverView({ rules }: { rules: Rules }) {
     event.preventDefault();
   };
 
-  const preview = hoveredCandidate?.move ?? hovered ?? selected ?? checked;
-  const moverName = names[toMove] || `Player ${toMove + 1}`;
-  const short = rack.length < RACK_SIZE && unseen.bagCount > 0 && !gameOver;
+  // ---- Tree actions ------------------------------------------------------
+
+  const removeCurrent = useCallback(() => {
+    if (node.parent === null) return;
+    const later = descendantCount(tree, node.id);
+    const what = later > 0 ? `this move and the ${later} after it` : 'this move';
+    if (later > 0 && !window.confirm(`Delete ${what}?`)) return;
+    dispatch({ type: 'remove', id: node.id });
+  }, [dispatch, node, tree]);
+
+  const loadTree = (next: GameTree) => {
+    if (hasMoves(tree) && !window.confirm('Replace the current game and its variations?')) {
+      return false;
+    }
+    dispatch({ type: 'load', tree: next });
+    setMode('moves');
+    return true;
+  };
+
+  const importGcg = async (gcg: string): Promise<string | null> => {
+    try {
+      const parsed = await api.parseGcg({ gcg });
+      return loadTree(treeFromEvents(parsed.start, parsed.moves)) ? null : 'Import cancelled.';
+    } catch (error) {
+      return errorMessage(error);
+    }
+  };
+
+  // "Open in Solver" from another tab; each hand-over is applied once.
+  const handled = useRef<number | null>(null);
+  useEffect(() => {
+    if (!incoming || handled.current === incoming.id) return;
+    handled.current = incoming.id;
+    if ('gcg' in incoming) {
+      void importGcg(incoming.gcg).then((error) => error && setNotice(error));
+    } else {
+      loadTree(treeFromEvents(incoming.start, incoming.moves));
+    }
+    // Runs only for a new hand-over; the loaders read the latest tree.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [incoming]);
+
+  const exportGcg = () => {
+    const record = mainLine(tree)
+      .slice(1)
+      .map((id) => nodeAt(tree, id))
+      .map((entry) => ({
+        player: entry.origin!.player,
+        rack: rackBefore(tree, entry),
+        move: entry.origin!.move,
+        cumulative: entry.scores[entry.origin!.player],
+        kind: entry.origin!.kind,
+        label: entry.origin!.label,
+      }));
+    const start = nodeAt(tree, tree.rootId);
+    const text = toGcg(names, record, {
+      title: 'Solver session',
+      startScores: start.scores,
+      customStart: start.board.some((line) => /[^.]/.test(line)),
+    });
+    downloadText('solver-game.gcg', text);
+  };
+
+  // Previews and transient input belong to one position.
+  useEffect(() => {
+    setHovered(null);
+    setHoveredCandidate(null);
+    setSelected(null);
+    setChecked(null);
+    setExchange(null);
+    setNotice(null);
+  }, [node.id]);
+
+  // Alt+←/→ step through the line, Home/End jump, Ctrl/Cmd+Z takes the
+  // current move back.
+  useEffect(() => {
+    const onKey = (event: globalThis.KeyboardEvent) => {
+      if (isTextField(event.target)) return;
+      if ((event.ctrlKey || event.metaKey) && event.key === 'z') {
+        removeCurrent();
+      } else if (event.altKey && event.key === 'ArrowLeft') {
+        dispatch({ type: 'step', where: 'back' });
+      } else if (event.altKey && event.key === 'ArrowRight') {
+        dispatch({ type: 'step', where: 'forward' });
+      } else if (event.key === 'Home' && !event.altKey) {
+        dispatch({ type: 'step', where: 'first' });
+      } else if (event.key === 'End' && !event.altKey) {
+        dispatch({ type: 'step', where: 'last' });
+      } else {
+        return;
+      }
+      event.preventDefault();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [dispatch, removeCurrent]);
+
+  const moves = useMoves(board, rack);
+
+  // ---- Render ------------------------------------------------------------
+
+  const preview =
+    hoveredCandidate?.move ??
+    hovered ??
+    selected ??
+    checked ??
+    (mode === 'moves' ? placement.preview : null);
+  const origin = node.origin;
+  const onMainLine = isOnMainLine(tree, node.id);
+  const ply = plyOf(tree, node.id);
+  const exchangeAllowed = unseen.bagCount >= MIN_BAG_FOR_EXCHANGE;
+  const editingMoves = mode === 'moves' && !ended;
+  const short = rack.length < RACK_SIZE && unseen.bagCount > 0 && !ended;
+  // A rack entered (or changed) after the move from here was recorded must
+  // still be able to make that move.
+  const rackConflict =
+    complete &&
+    mainChild?.origin?.kind === 'play' &&
+    rack.length - accountTiles(rack, tilesPlayed(mainChild.origin.move)).leave.length <
+      tilesPlayed(mainChild.origin.move).length;
 
   return (
     <div className="analysis solver">
       <div className="board-column">
-        <div className="board-toolbar">
-          <p className="hint">
-            {cursor ? (
-              <>
-                Typing at <strong>{squareName(cursor.row, cursor.col)}</strong> {cursor.direction}.
-                Shift+letter places a blank; Space flips direction; Esc stops.
-              </>
-            ) : (
-              'Click a square and type to set up the board.'
-            )}
-          </p>
-          <button
-            type="button"
-            className={`button-ghost toggle${blankMode ? ' is-on' : ''}`}
-            aria-pressed={blankMode}
-            onClick={() => setBlankMode(!blankMode)}
-            title="Type blanks without holding Shift"
-          >
-            Blank mode
-          </button>
+        <div className="board-toolbar solver-toolbar">
+          <div className="segmented" role="radiogroup" aria-label="Board mode">
+            <button
+              type="button"
+              role="radio"
+              aria-checked={mode === 'moves'}
+              className={mode === 'moves' ? 'is-active' : undefined}
+              onClick={() => setMode('moves')}
+              title="Tiles placed on the board form a move for the player to move"
+            >
+              Enter moves
+            </button>
+            <button
+              type="button"
+              role="radio"
+              aria-checked={mode === 'edit'}
+              className={mode === 'edit' ? 'is-active' : undefined}
+              onClick={() => mode !== 'edit' && enterEditMode()}
+              title="Set up any position: tiles typed here are not a move"
+            >
+              Edit board
+            </button>
+          </div>
+          <div className="button-row">
+            <button
+              type="button"
+              className={`button-ghost toggle${showRacks ? ' is-on' : ''}`}
+              aria-pressed={showRacks}
+              onClick={() => setShowRacks(!showRacks)}
+              title="Hide racks everywhere, e.g. when presenting a game"
+            >
+              Show racks
+            </button>
+            <button
+              type="button"
+              className={`button-ghost toggle${blankMode ? ' is-on' : ''}`}
+              aria-pressed={blankMode}
+              onClick={() => setBlankMode(!blankMode)}
+              title="Type blanks without holding Shift"
+            >
+              Blank
+            </button>
+          </div>
         </div>
+
+        <Scoreboard
+          players={[{ name: names[0] || 'Player 1' }, { name: names[1] || 'Player 2' }]}
+          scores={scores}
+          racks={[
+            racks[0] || (opponentKnown || toMove === 0 ? '' : null),
+            racks[1] || (opponentKnown || toMove === 1 ? '' : null),
+          ]}
+          toMove={ended ? null : toMove}
+          lastMover={origin?.player ?? null}
+          lastScore={origin?.move.score ?? null}
+          bag={unseen.bagCount}
+          winner={null}
+          tileValues={rules.tileValues}
+          hideRacks={!showRacks}
+        />
+
         <Board
           board={board}
           premiums={rules.premiums}
           tileValues={rules.tileValues}
           preview={preview}
-          recent={origin?.move ?? null}
-          cursor={cursor}
-          onSquareSelect={selectSquare}
-          onKeyDown={onBoardKey}
+          recent={origin?.kind === 'play' ? origin.move : null}
+          cursor={mode === 'edit' || placement.cursor ? cursor : null}
+          onSquareSelect={(row, col) => {
+            boardRef.current?.focus();
+            placement.selectSquare(row, col);
+          }}
+          onKeyDown={mode === 'edit' ? onEditKey : placement.onKeyDown}
           boardRef={boardRef}
         />
-        <Legend />
-        {gameOver && (
+
+        <div className="nav-bar" role="group" aria-label="Move navigation">
+          <button
+            type="button"
+            className="button-ghost"
+            onClick={() => dispatch({ type: 'step', where: 'first' })}
+            disabled={node.parent === null}
+            title="Start (Home)"
+          >
+            ⏮
+          </button>
+          <button
+            type="button"
+            className="button-ghost"
+            onClick={() => dispatch({ type: 'step', where: 'back' })}
+            disabled={node.parent === null}
+            title="Back (Alt+←)"
+          >
+            ◀
+          </button>
+          <span className="status-text nav-position">
+            {ply === 0 ? 'Start' : `Move ${ply}`}
+            {!onMainLine && ' · variation'}
+          </span>
+          <button
+            type="button"
+            className="button-ghost"
+            onClick={() => dispatch({ type: 'step', where: 'forward' })}
+            disabled={node.children.length === 0}
+            title="Forward (Alt+→)"
+          >
+            ▶
+          </button>
+          <button
+            type="button"
+            className="button-ghost"
+            onClick={() => dispatch({ type: 'step', where: 'last' })}
+            disabled={node.children.length === 0}
+            title="End of the line (End)"
+          >
+            ⏭
+          </button>
+        </div>
+
+        {mode === 'edit' ? (
+          <p className="hint mode-hint">
+            {cursor ? (
+              <>
+                Editing at <strong>{squareName(cursor.row, cursor.col)}</strong> {cursor.direction}.
+                Type letters (Shift for a blank), Backspace to clear, Space to turn, Esc to stop.
+              </>
+            ) : (
+              'Edit board: click a square and type to set up any position. Tiles placed here are not a move. Switch back to Enter moves to record moves.'
+            )}
+          </p>
+        ) : (
+          <div className="play-controls move-entry">
+            <p className="play-status">
+              <strong>{ended ? 'Game over' : `${moverName} to move`}</strong>
+              {editingMoves && !exchange && (
+                <span className="hint">
+                  {' '}
+                  Click a square and type, or click a square then a tile. Shift+letter plays a
+                  blank; Space turns; Enter records; Esc recalls.
+                </span>
+              )}
+            </p>
+            {showRacks ? (
+              <div className="rack-entry">
+                <input
+                  className="text-input rack-text"
+                  value={rack}
+                  onChange={(event) => setRack(normaliseRack(event.target.value))}
+                  placeholder="Rack (optional)"
+                  aria-label={`${moverName}'s rack`}
+                  spellCheck={false}
+                  autoComplete="off"
+                />
+                <button type="button" className="button-ghost" onClick={fillRack}>
+                  {rack.length > 0 && rack.length < RACK_SIZE ? 'Fill randomly' : 'Random'}
+                </button>
+                <button
+                  type="button"
+                  className="button-ghost"
+                  onClick={() => setRack('')}
+                  disabled={rack.length === 0}
+                >
+                  Clear
+                </button>
+              </div>
+            ) : null}
+            {showRacks && rack.length > 0 && (
+              <PlayerRack
+                tiles={placement.tiles}
+                order={placement.tiles.map((_, i) => i)}
+                used={placement.used}
+                selected={exchange}
+                tileValues={rules.tileValues}
+                disabled={!editingMoves || playing}
+                onTileClick={onRackTile}
+                blankPending={placement.blankPending}
+                onBlankLetter={(letter) => {
+                  placement.chooseBlank(letter);
+                  boardRef.current?.focus();
+                }}
+                onBlankCancel={placement.cancelBlank}
+              />
+            )}
+            <p className="hint">
+              {!showRacks
+                ? 'Racks are hidden.'
+                : complete
+                  ? 'Moves must come from this rack.'
+                  : rack.length > 0
+                    ? `Partly known (${rack.length} tile${rack.length === 1 ? '' : 's'}): tiles not on it are taken as drawn. ${short ? 'Type the tiles drawn, or fill randomly, to solve.' : ''}`
+                    : 'Rack unknown: any tiles may be placed. Enter it to solve here and to review this move.'}
+            </p>
+            {showRacks && rackConflict && (
+              <p className="verdict is-illegal">
+                This rack does not hold the tiles of {mainChild?.origin?.move.notation}, the move
+                played from here.
+              </p>
+            )}
+
+            {exchange !== null ? (
+              <div className="button-row">
+                {!complete && (
+                  <input
+                    className="text-input rack-text exchange-text"
+                    value={exchangeText}
+                    onChange={(event) => setExchangeText(normaliseRack(event.target.value))}
+                    placeholder="Tiles exchanged"
+                    aria-label="Tiles exchanged"
+                    autoFocus
+                  />
+                )}
+                <button
+                  type="button"
+                  className="button-primary"
+                  disabled={playing}
+                  onClick={confirmExchange}
+                >
+                  Exchange
+                  {complete && exchange.size > 0
+                    ? ` ${exchange.size} tile${exchange.size === 1 ? '' : 's'}`
+                    : ''}
+                </button>
+                <button type="button" className="button-ghost" onClick={() => setExchange(null)}>
+                  Cancel
+                </button>
+                {complete && <span className="hint">Pick the tiles put back.</span>}
+              </div>
+            ) : (
+              <div className="button-row play-buttons">
+                <button
+                  type="button"
+                  className="button-primary"
+                  disabled={!editingMoves || playing || placement.verdict.kind !== 'legal'}
+                  onClick={placement.submit}
+                >
+                  Record move
+                </button>
+                <button
+                  type="button"
+                  className="button-secondary"
+                  disabled={!editingMoves || playing}
+                  onClick={pass}
+                >
+                  Pass
+                </button>
+                <button
+                  type="button"
+                  className="button-secondary"
+                  disabled={!editingMoves || playing || !exchangeAllowed}
+                  title={exchangeAllowed ? undefined : 'The bag needs at least 7 tiles'}
+                  onClick={() => {
+                    placement.recallAll();
+                    setExchange(new Set());
+                  }}
+                >
+                  Exchange
+                </button>
+                <button
+                  type="button"
+                  className="button-ghost"
+                  disabled={placement.placed.length === 0}
+                  onClick={placement.recallAll}
+                >
+                  Recall
+                </button>
+              </div>
+            )}
+            <PlacementVerdict verdict={placement.verdict} notice={placement.notice} />
+          </div>
+        )}
+
+        {ended && (
           <p className="verdict is-legal end-banner">
-            {wentOut && origin
+            {wentOut(tree, node) && origin
               ? `${names[origin.player]} went out. Game over.`
               : 'Six scoreless turns in a row. Game over.'}{' '}
             Final rack adjustments are not applied here.
           </p>
         )}
         {notice && <p className="verdict is-illegal">{notice}</p>}
+        <Legend />
       </div>
 
       <div className="side-column">
-        <PositionPanel
-          position={position}
-          onRename={(next) => dispatch({ type: 'rename', names: next })}
-          onEdit={(patch) => dispatch({ type: 'edit', patch })}
-        />
-        <RackInput
-          rack={rack}
-          tileValues={rules.tileValues}
-          onChange={setRack}
-          onRandom={fillRack}
-          title={`${moverName}'s rack`}
-          randomLabel={rack.length > 0 && rack.length < RACK_SIZE ? 'Fill randomly' : 'Random'}
-          note={
-            short
-              ? `${moverName} holds ${rack.length} tile${rack.length === 1 ? '' : 's'}. Type the tiles drawn, or fill randomly from the unseen pool for a quick demo.`
-              : 'Letters, or ? for a blank.'
-          }
-        />
         <SolverResults
           moverName={moverName}
           analysis={analysis}
-          loading={solving}
-          error={solveError}
+          loading={solvingKey === requestKey}
+          error={failedHere ? solveError.message : null}
           effort={effort}
           onEffort={setEffort}
           blocked={blocked}
           onSolve={solve}
-          autoSolve={autoSolve}
-          onAutoSolve={setAutoSolve}
+          engineOn={engineOn}
+          onEngineOn={setEngineOn}
+          playedNotation={playedHere}
           hovered={hoveredCandidate}
           onHover={setHoveredCandidate}
           onPlay={playCandidate}
-          playing={playing}
+          playing={playing || ended}
+        />
+
+        <section className="panel" aria-labelledby="moves-heading">
+          <div className="panel-header">
+            <h2 id="moves-heading">Moves</h2>
+            <span className="status-text">{mainLine(tree).length - 1} in the main line</span>
+          </div>
+          {currentGrade && origin && (
+            <p className={`verdict grade-note grade-${currentGrade.grade}`}>
+              <strong>{GRADE_LABEL[currentGrade.grade]}</strong>: {origin.move.notation}{' '}
+              {currentGrade.lost > 0
+                ? `gave up ${currentGrade.lost.toFixed(1)} points to ${currentGrade.best.move.notation}`
+                : 'matches the engine'}{' '}
+              ({currentGrade.basis}).{' '}
+              {node.parent && currentGrade.lost > 0 && (
+                <button
+                  type="button"
+                  className="link-button"
+                  onClick={() => dispatch({ type: 'goto', id: node.parent! })}
+                >
+                  See the position before
+                </button>
+              )}
+            </p>
+          )}
+          {origin?.note && <p className="hint">Note: {origin.note}</p>}
+          <MoveTree
+            tree={tree}
+            grades={grades}
+            showRacks={showRacks}
+            onGoto={(id) => dispatch({ type: 'goto', id })}
+          />
+          <div className="button-row">
+            <button
+              type="button"
+              className="button-ghost"
+              disabled={onMainLine}
+              onClick={() => dispatch({ type: 'promote', id: node.id })}
+              title="Make the line through this move the main line"
+            >
+              Promote to main line
+            </button>
+            <button
+              type="button"
+              className="button-ghost"
+              disabled={node.parent === null}
+              onClick={removeCurrent}
+              title="Delete this move and everything after it (Ctrl+Z)"
+            >
+              {onMainLine ? 'Delete from here' : 'Delete variation'}
+            </button>
+            <button
+              type="button"
+              className="button-ghost"
+              onClick={exportGcg}
+              disabled={!hasMoves(tree)}
+              title="Download the main line as GCG"
+            >
+              Export GCG
+            </button>
+            <button
+              type="button"
+              className="button-ghost"
+              onClick={() => {
+                if (
+                  !hasMoves(tree) ||
+                  window.confirm('Start a new game? The moves are discarded.')
+                ) {
+                  dispatch({ type: 'reset' });
+                  setCursor(null);
+                }
+              }}
+            >
+              New game
+            </button>
+          </div>
+          <p className="hint">
+            A move made from an earlier position starts a variation; the main line is kept.
+          </p>
+        </section>
+
+        <PositionPanel
+          names={names}
+          node={node}
+          editable={mode === 'edit'}
+          showRacks={showRacks}
+          onRename={(next) => dispatch({ type: 'rename', names: next })}
+          onSetup={(patch) => dispatch({ type: 'setup', patch })}
+          onRacks={(patch) => dispatch({ type: 'racks', patch })}
         />
         <MoveChecker
           board={board}
-          rack={rack}
+          rack={complete ? rack : ''}
           onPlay={playNotation}
           onPreview={setChecked}
         />
       </div>
 
       <div className="extras">
-        <SolverHistoryPanel
-          positions={history.positions}
-          index={history.index}
-          onGoto={(index) => dispatch({ type: 'goto', index })}
-          onUndo={() => dispatch({ type: 'undo' })}
-          onClear={() => {
-            dispatch({ type: 'reset' });
-            setCursor(null);
+        <GameReviewPanel
+          names={names}
+          moves={reviewed}
+          progress={review.progress}
+          currentId={node.id}
+          onRun={(level) => {
+            solveController.current?.abort();
+            void review.run(level);
           }}
-          onExport={exportGcg}
+          onCancel={review.cancel}
+          onGoto={(id) => dispatch({ type: 'goto', id })}
         />
+        <ImportPanel onImportGcg={importGcg} onApplyMoves={applySequence} />
         <UnseenTiles
           position={unseen}
           note={
@@ -404,9 +951,10 @@ export function SolverView({ rules }: { rules: Rules }) {
           selected={selected}
           onHover={setHovered}
           onSelect={setSelected}
-          onPlay={(move) => void playCandidate({ move, equity: 0, staticRank: null, chosen: false })}
+          onPlay={(move) =>
+            void playCandidate({ move, equity: 0, staticRank: null, chosen: false })
+          }
         />
-        <SequenceInput onApply={applySequence} />
       </div>
     </div>
   );

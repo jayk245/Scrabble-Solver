@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 
 import { api, gameGcgUrl } from '../api/client';
 import type {
@@ -20,13 +20,12 @@ import { PlaySetup } from '../components/PlaySetup';
 import { ReviewPanel } from '../components/ReviewPanel';
 import { Scoreboard } from '../components/Scoreboard';
 import { UnseenTiles } from '../components/UnseenTiles';
+import { PlacementVerdict } from '../components/PlacementVerdict';
 import { useGameStream, type GameStream } from '../hooks/useGameStream';
-import { BOARD_SIZE, EMPTY, emptyBoard, squareAt, squareName, type Cursor } from '../lib/board';
-import { placementNotation, placementPreview, type PlacedTile } from '../lib/placement';
+import { usePlacement } from '../hooks/usePlacement';
+import { emptyBoard, squareName } from '../lib/board';
 import { unseenSummary } from '../lib/tiles';
 
-/** Delay before checking a word being built, so typing stays responsive. */
-const VALIDATE_DEBOUNCE_MS = 150;
 /** The bag must hold a full rack for an exchange. */
 const MIN_BAG_FOR_EXCHANGE = 7;
 
@@ -37,12 +36,6 @@ const END_REASON: Partial<Record<GameEndEvent['reason'], string>> = {
   cancelled: 'cancelled',
   abandoned: 'abandoned after inactivity',
 };
-
-type Verdict =
-  | { kind: 'none' }
-  | { kind: 'checking' }
-  | { kind: 'legal'; notation: string; move: MoveInfo }
-  | { kind: 'illegal'; message: string };
 
 function gameIdFromHash(): string | null {
   return /^#play\/([0-9a-f]+)$/.exec(window.location.hash)?.[1] ?? null;
@@ -63,14 +56,6 @@ function shuffled(values: number[]): number[] {
     [out[i], out[j]] = [out[j]!, out[i]!];
   }
   return out;
-}
-
-/** The square `steps` along the cursor's direction, or null off the board. */
-function step(cursor: Cursor, steps: number): Cursor | null {
-  const row = cursor.direction === 'down' ? cursor.row + steps : cursor.row;
-  const col = cursor.direction === 'across' ? cursor.col + steps : cursor.col;
-  if (row < 0 || col < 0 || row >= BOARD_SIZE || col >= BOARD_SIZE) return null;
-  return { ...cursor, row, col };
 }
 
 function EndSummary({
@@ -118,10 +103,12 @@ interface PlayScreenProps {
   stream: GameStream;
   rules: Rules;
   onNewGame: () => void;
+  /** Loads the finished game, with every rack, into the Solver. */
+  onOpenInSolver: (gcg: string) => void;
 }
 
 /** One game in progress (or finished); remounted per game. */
-function PlayScreen({ gameId, stream, rules, onNewGame }: PlayScreenProps) {
+function PlayScreen({ gameId, stream, rules, onNewGame, onOpenInSolver }: PlayScreenProps) {
   const { start, moves, end } = stream;
   const humanSeat: 0 | 1 = start?.humanSeat ?? 0;
   const botSeat: 0 | 1 = humanSeat === 0 ? 1 : 0;
@@ -138,133 +125,33 @@ function PlayScreen({ gameId, stream, rules, onNewGame }: PlayScreenProps) {
   const bag = latest?.bag ?? start?.bag ?? 0;
   const tiles = useMemo(() => [...rack], [rack]);
 
-  const [placed, setPlaced] = useState<PlacedTile[]>([]);
-  const [cursor, setCursor] = useState<Cursor | null>(null);
   const [order, setOrder] = useState<number[]>(() => identity(tiles.length));
   const [exchange, setExchange] = useState<Set<number> | null>(null);
-  const [blankIndex, setBlankIndex] = useState<number | null>(null);
-  const [verdict, setVerdict] = useState<Verdict>({ kind: 'none' });
   const [busy, setBusy] = useState(false);
-  const [notice, setNotice] = useState<string | null>(null);
   const [hint, setHint] = useState<MoveAnalysis | null>(null);
   const [hoveredHint, setHoveredHint] = useState<Candidate | null>(null);
   const [hoveredReview, setHoveredReview] = useState<ReviewEntry | null>(null);
   const [viewCursor, setViewCursor] = useState<number | null>(null);
   const boardRef = useRef<HTMLDivElement>(null);
 
+  const canEdit = myTurn && !busy && viewCursor === null && exchange === null;
+  const placement = usePlacement({
+    board: liveBoard,
+    rack,
+    strict: true,
+    enabled: canEdit,
+    onSubmit: (notation) => void send(notation),
+  });
+  const { setNotice, recallAll } = placement;
+
   // Every new move (ours, confirmed by the server, or the bot's) starts a
   // fresh turn: tentative tiles were either accepted or are now stale.
   useEffect(() => {
-    setPlaced([]);
     setOrder(identity(tiles.length));
     setExchange(null);
-    setBlankIndex(null);
     setHint(null);
     setHoveredHint(null);
-    setNotice(null);
   }, [moves.length, tiles.length]);
-
-  const used = useMemo(() => new Set(placed.map((tile) => tile.rackIndex)), [placed]);
-  const placement = useMemo(() => placementNotation(liveBoard, placed), [liveBoard, placed]);
-
-  // Live legality and score: the engine is the only judge of words, so
-  // each new arrangement is sent to /api/validate (debounced, and aborted
-  // when superseded so a stale answer never wins).
-  useEffect(() => {
-    if (placement.kind === 'none') {
-      setVerdict({ kind: 'none' });
-      return;
-    }
-    if (placement.kind === 'error') {
-      setVerdict({ kind: 'illegal', message: placement.message });
-      return;
-    }
-    setVerdict({ kind: 'checking' });
-    const controller = new AbortController();
-    const timer = window.setTimeout(() => {
-      api
-        .validate({ board: liveBoard, rack, move: placement.notation }, controller.signal)
-        .then((response) =>
-          setVerdict(
-            response.valid
-              ? { kind: 'legal', notation: placement.notation, move: response.move }
-              : { kind: 'illegal', message: response.message },
-          ),
-        )
-        .catch((error: unknown) => {
-          if (!controller.signal.aborted) setVerdict({ kind: 'illegal', message: errorMessage(error) });
-        });
-    }, VALIDATE_DEBOUNCE_MS);
-    return () => {
-      window.clearTimeout(timer);
-      controller.abort();
-    };
-  }, [placement, liveBoard, rack]);
-
-  const occupiedAt = useCallback(
-    (row: number, col: number) =>
-      squareAt(liveBoard, row, col) !== EMPTY ||
-      placed.some((tile) => tile.row === row && tile.col === col),
-    [liveBoard, placed],
-  );
-
-  const canEdit = myTurn && !busy && viewCursor === null && exchange === null;
-
-  /** Places rack tile `index` (as board character `letter`) at the cursor. */
-  const placeAt = (index: number, letter: string) => {
-    if (!cursor) return;
-    let target: Cursor | null = cursor;
-    while (target && occupiedAt(target.row, target.col)) target = step(target, 1);
-    if (!target) return;
-    const square = target;
-    setPlaced((current) => [...current, { row: square.row, col: square.col, letter, rackIndex: index }]);
-    setCursor(step(square, 1) ?? square);
-    setNotice(null);
-  };
-
-  const placeLetter = (letter: string, asBlank: boolean) => {
-    const free = (wanted: string) => tiles.findIndex((tile, i) => tile === wanted && !used.has(i));
-    const exact = asBlank ? -1 : free(letter);
-    if (exact >= 0) {
-      placeAt(exact, letter);
-      return;
-    }
-    const blank = free('?');
-    if (blank >= 0) {
-      placeAt(blank, letter.toLowerCase());
-      return;
-    }
-    setNotice(asBlank ? 'You have no blank left.' : `There is no ${letter} on your rack.`);
-  };
-
-  const recallTile = (index: number) => {
-    const tile = placed.find((entry) => entry.rackIndex === index);
-    setPlaced((current) => current.filter((entry) => entry.rackIndex !== index));
-    if (tile) setCursor((current) => ({ row: tile.row, col: tile.col, direction: current?.direction ?? 'across' }));
-  };
-
-  const recallAll = () => {
-    setPlaced([]);
-    setBlankIndex(null);
-  };
-
-  const selectSquare = useCallback(
-    (row: number, col: number) => {
-      boardRef.current?.focus();
-      const tile = placed.find((entry) => entry.row === row && entry.col === col);
-      if (tile && canEdit) {
-        setPlaced((current) => current.filter((entry) => entry !== tile));
-        setCursor((current) => ({ row, col, direction: current?.direction ?? 'across' }));
-        return;
-      }
-      setCursor((current) =>
-        current && current.row === row && current.col === col
-          ? { ...current, direction: current.direction === 'across' ? 'down' : 'across' }
-          : { row, col, direction: current?.direction ?? 'across' },
-      );
-    },
-    [placed, canEdit],
-  );
 
   const onRackClick = (index: number) => {
     boardRef.current?.focus();
@@ -275,20 +162,7 @@ function PlayScreen({ gameId, stream, rules, onNewGame }: PlayScreenProps) {
       setExchange(next);
       return;
     }
-    if (!canEdit) return;
-    if (used.has(index)) {
-      recallTile(index);
-      return;
-    }
-    if (!cursor) {
-      setNotice('Click a square on the board first, then a tile (or just type).');
-      return;
-    }
-    if (tiles[index] === '?') {
-      setBlankIndex(index);
-      return;
-    }
-    placeAt(index, tiles[index] ?? '');
+    placement.clickRackTile(index);
   };
 
   const send = async (move: string): Promise<boolean> => {
@@ -304,10 +178,6 @@ function PlayScreen({ gameId, stream, rules, onNewGame }: PlayScreenProps) {
     } finally {
       setBusy(false);
     }
-  };
-
-  const submit = () => {
-    if (verdict.kind === 'legal' && canEdit) void send(verdict.notation);
   };
 
   const pass = () => {
@@ -339,50 +209,9 @@ function PlayScreen({ gameId, stream, rules, onNewGame }: PlayScreenProps) {
 
   /** Lays a suggested move's tiles on the board for the player to submit. */
   const applyCandidate = (candidate: Candidate) => {
-    const taken = new Set<number>();
-    const next: PlacedTile[] = [];
-    for (const square of candidate.move.tiles) {
-      if (square.playThrough) continue;
-      const wanted = square.blank ? '?' : square.letter;
-      const index = tiles.findIndex((tile, i) => tile === wanted && !taken.has(i));
-      if (index < 0) return;
-      taken.add(index);
-      next.push({ row: square.row, col: square.col, letter: square.letter, rackIndex: index });
-    }
-    setPlaced(next);
-    setCursor(null);
+    if (!placement.applyMove(candidate.move)) return;
     setHoveredHint(null);
     boardRef.current?.focus();
-  };
-
-  const onBoardKey = (event: KeyboardEvent<HTMLDivElement>) => {
-    if (event.ctrlKey || event.metaKey || event.altKey) return;
-    const { key } = event;
-    if (key === 'Enter') {
-      submit();
-    } else if (key === 'Escape') {
-      recallAll();
-      setCursor(null);
-    } else if (!canEdit) {
-      return;
-    } else if (/^[a-zA-Z]$/.test(key) && cursor) {
-      placeLetter(key.toUpperCase(), event.shiftKey);
-    } else if (key === 'Backspace') {
-      const last = placed.at(-1);
-      if (!last) return;
-      setPlaced(placed.slice(0, -1));
-      setCursor({ row: last.row, col: last.col, direction: cursor?.direction ?? 'across' });
-    } else if (key === ' ' && cursor) {
-      setCursor({ ...cursor, direction: cursor.direction === 'across' ? 'down' : 'across' });
-    } else if (key.startsWith('Arrow') && cursor) {
-      const across = key === 'ArrowLeft' || key === 'ArrowRight';
-      const delta = key === 'ArrowLeft' || key === 'ArrowUp' ? -1 : 1;
-      const moved = step({ ...cursor, direction: across ? 'across' : 'down' }, delta);
-      if (moved) setCursor({ ...moved, direction: cursor.direction });
-    } else {
-      return;
-    }
-    event.preventDefault();
   };
 
   if (!start) {
@@ -405,7 +234,7 @@ function PlayScreen({ gameId, stream, rules, onNewGame }: PlayScreenProps) {
     return index > 0 ? (moves[index - 1]?.board ?? start.board) : start.board;
   };
   let shownBoard = liveBoard;
-  let preview: MoveInfo | null = hoveredHint?.move ?? placementPreview(placed);
+  let preview: MoveInfo | null = hoveredHint?.move ?? placement.preview;
   let recent: MoveInfo | null = latest?.move ?? null;
   if (hoveredReview) {
     shownBoard = boardBefore(hoveredReview.turn);
@@ -448,9 +277,12 @@ function PlayScreen({ gameId, stream, rules, onNewGame }: PlayScreenProps) {
           tileValues={rules.tileValues}
           preview={preview}
           recent={recent}
-          cursor={canEdit ? cursor : null}
-          onSquareSelect={selectSquare}
-          onKeyDown={onBoardKey}
+          cursor={canEdit ? placement.cursor : null}
+          onSquareSelect={(row, col) => {
+            boardRef.current?.focus();
+            placement.selectSquare(row, col);
+          }}
+          onKeyDown={placement.onKeyDown}
           boardRef={boardRef}
         />
 
@@ -478,18 +310,17 @@ function PlayScreen({ gameId, stream, rules, onNewGame }: PlayScreenProps) {
             <PlayerRack
               tiles={tiles}
               order={order}
-              used={used}
+              used={placement.used}
               selected={exchange}
               tileValues={rules.tileValues}
               disabled={!myTurn || busy}
               onTileClick={onRackClick}
-              blankPending={blankIndex !== null}
+              blankPending={placement.blankPending}
               onBlankLetter={(letter) => {
-                if (blankIndex !== null) placeAt(blankIndex, letter.toLowerCase());
-                setBlankIndex(null);
+                placement.chooseBlank(letter);
                 boardRef.current?.focus();
               }}
-              onBlankCancel={() => setBlankIndex(null)}
+              onBlankCancel={placement.cancelBlank}
             />
 
             {exchange ? (
@@ -512,8 +343,8 @@ function PlayScreen({ gameId, stream, rules, onNewGame }: PlayScreenProps) {
                 <button
                   type="button"
                   className="button-primary"
-                  disabled={!canEdit || verdict.kind !== 'legal'}
-                  onClick={submit}
+                  disabled={!canEdit || placement.verdict.kind !== 'legal'}
+                  onClick={placement.submit}
                 >
                   Submit
                 </button>
@@ -543,7 +374,7 @@ function PlayScreen({ gameId, stream, rules, onNewGame }: PlayScreenProps) {
                 <button
                   type="button"
                   className="button-ghost"
-                  disabled={placed.length === 0}
+                  disabled={placement.placed.length === 0}
                   onClick={recallAll}
                 >
                   Recall
@@ -554,16 +385,7 @@ function PlayScreen({ gameId, stream, rules, onNewGame }: PlayScreenProps) {
               </div>
             )}
 
-            {verdict.kind === 'legal' && (
-              <p className="verdict is-legal">
-                <strong className="notation">{verdict.move.notation}</strong> scores{' '}
-                <strong>{verdict.move.score}</strong>
-                {verdict.move.bingo && ' (bingo!)'}
-              </p>
-            )}
-            {verdict.kind === 'illegal' && <p className="verdict is-illegal">{verdict.message}</p>}
-            {verdict.kind === 'checking' && <p className="hint">Checking…</p>}
-            {notice && <p className="verdict is-illegal">{notice}</p>}
+            <PlacementVerdict verdict={placement.verdict} notice={placement.notice} />
           </div>
         )}
         {end && <EndSummary end={end} names={names} humanSeat={humanSeat} />}
@@ -602,6 +424,16 @@ function PlayScreen({ gameId, stream, rules, onNewGame }: PlayScreenProps) {
             ) : (
               <button type="button" className="button-ghost" disabled title="Available when the game ends">
                 Download GCG
+              </button>
+            )}
+            {end?.gcg && (
+              <button
+                type="button"
+                className="button-ghost"
+                onClick={() => onOpenInSolver(end.gcg!)}
+                title="Step through the game with both racks and ask the engine anywhere"
+              >
+                Open in Solver
               </button>
             )}
           </div>
@@ -651,9 +483,10 @@ function PlayScreen({ gameId, stream, rules, onNewGame }: PlayScreenProps) {
           position={unseen}
           note="Unseen tiles are the bag plus the bot's rack, as you would track them."
         />
-        {cursor && canEdit && (
+        {placement.cursor && canEdit && (
           <p className="hint">
-            Cursor at {squareName(cursor.row, cursor.col)} {cursor.direction}.
+            Cursor at {squareName(placement.cursor.row, placement.cursor.col)}{' '}
+            {placement.cursor.direction}.
           </p>
         )}
       </div>
@@ -668,7 +501,15 @@ function PlayScreen({ gameId, stream, rules, onNewGame }: PlayScreenProps) {
  * the game's event stream, so a reload (or a #play/<id> link) restores the
  * game exactly.
  */
-export function PlayView({ rules, active }: { rules: Rules; active: boolean }) {
+export function PlayView({
+  rules,
+  active,
+  onOpenInSolver,
+}: {
+  rules: Rules;
+  active: boolean;
+  onOpenInSolver: (gcg: string) => void;
+}) {
   const [gameId, setGameId] = useState<string | null>(gameIdFromHash);
   const [starting, setStarting] = useState(false);
   const [startError, setStartError] = useState<string | null>(null);
@@ -700,6 +541,7 @@ export function PlayView({ rules, active }: { rules: Rules; active: boolean }) {
         stream={stream}
         rules={rules}
         onNewGame={() => setGameId(null)}
+        onOpenInSolver={onOpenInSolver}
       />
     );
   }

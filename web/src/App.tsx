@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react';
 
+import type { GameMoveEvent, GameStartEvent } from './api/types';
 import { useServerInfo } from './hooks/useServerInfo';
 import { GameViewerView } from './views/GameViewerView';
 import { PlayView } from './views/PlayView';
-import { SolverView } from './views/SolverView';
+import { SolverView, type SolverImport } from './views/SolverView';
 
 type Mode = 'solver' | 'play' | 'viewer';
 
@@ -42,6 +43,19 @@ export function App() {
     // replaceState avoids a history entry per tab switch.
     window.history.replaceState(null, '', hash || window.location.pathname);
     setMode(next);
+  };
+
+  // "Open in Solver" from the other tabs: the game is handed to the solver
+  // as a value with a fresh id, so the same game can be opened twice.
+  const [solverImport, setSolverImport] = useState<SolverImport | null>(null);
+  const nextImportId = (solverImport?.id ?? 0) + 1;
+  const openGcgInSolver = (gcg: string) => {
+    setSolverImport({ id: nextImportId, gcg });
+    select('solver');
+  };
+  const openGameInSolver = (start: GameStartEvent, moves: GameMoveEvent[]) => {
+    setSolverImport({ id: nextImportId, start, moves });
+    select('solver');
   };
 
   return (
@@ -87,13 +101,21 @@ export function App() {
         {server.status === 'ready' && (
           <>
             <div hidden={mode !== 'solver'}>
-              <SolverView rules={server.rules} />
+              <SolverView rules={server.rules} incoming={solverImport} />
             </div>
             <div hidden={mode !== 'play'}>
-              <PlayView rules={server.rules} active={mode === 'play'} />
+              <PlayView
+                rules={server.rules}
+                active={mode === 'play'}
+                onOpenInSolver={openGcgInSolver}
+              />
             </div>
             <div hidden={mode !== 'viewer'}>
-              <GameViewerView rules={server.rules} active={mode === 'viewer'} />
+              <GameViewerView
+                rules={server.rules}
+                active={mode === 'viewer'}
+                onOpenInSolver={openGameInSolver}
+              />
             </div>
           </>
         )}

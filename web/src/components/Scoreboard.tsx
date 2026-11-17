@@ -12,6 +12,8 @@ export interface ScoreboardProps {
   lastScore: number | null;
   bag: number;
   winner: 0 | 1 | -1 | null;
+  /** Leaves the racks out, e.g. when presenting a game. */
+  hideRacks?: boolean;
   tileValues: Record<string, number>;
 }
 
@@ -41,6 +43,7 @@ export function Scoreboard({
   bag,
   winner,
   tileValues,
+  hideRacks = false,
 }: ScoreboardProps) {
   return (
     <section className="scoreboard" aria-label="Score">
@@ -66,7 +69,7 @@ export function Scoreboard({
               </span>
             </div>
             <span className="player-meta">{describe(players[seat])}</span>
-            <RackTiles rack={racks[seat]} tileValues={tileValues} compact />
+            {!hideRacks && <RackTiles rack={racks[seat]} tileValues={tileValues} compact />}
           </div>
         );
       })}

@@ -1,7 +1,15 @@
 import { useEffect, useState } from 'react';
 
 import { api, gameGcgUrl } from '../api/client';
-import type { Candidate, GameEndEvent, Rules, Seats, StartGameRequest } from '../api/types';
+import type {
+  Candidate,
+  GameEndEvent,
+  GameMoveEvent,
+  GameStartEvent,
+  Rules,
+  Seats,
+  StartGameRequest,
+} from '../api/types';
 import { AnalysisPanel } from '../components/AnalysisPanel';
 import { Board } from '../components/Board';
 import { GameLog } from '../components/GameLog';
@@ -71,10 +79,12 @@ interface GameScreenProps {
   rules: Rules;
   active: boolean;
   onNewGame: () => void;
+  /** Loads the game, with both racks, into the Solver. */
+  onOpenInSolver: (start: GameStartEvent, moves: GameMoveEvent[]) => void;
 }
 
 /** Playback of one game; remounted per game so playback state resets. */
-function GameScreen({ gameId, stream, rules, active, onNewGame }: GameScreenProps) {
+function GameScreen({ gameId, stream, rules, active, onNewGame, onOpenInSolver }: GameScreenProps) {
   const { start, moves, end } = stream;
   const live = end === null && stream.status !== 'error';
   const playback = usePlayback(moves.length, live);
@@ -195,6 +205,15 @@ function GameScreen({ gameId, stream, rules, active, onNewGame }: GameScreenProp
                 Download GCG
               </button>
             )}
+            <button
+              type="button"
+              className="button-ghost"
+              disabled={moves.length === 0}
+              onClick={() => onOpenInSolver(start, moves)}
+              title="Step through the moves so far with both racks and ask the engine anywhere"
+            >
+              Open in Solver
+            </button>
           </div>
         </div>
         <GameLog moves={moves} names={names} cursor={cursor} onSeek={seek} live={live} />
@@ -218,7 +237,15 @@ function GameScreen({ gameId, stream, rules, active, onNewGame }: GameScreenProp
  * on that buffer only (usePlayback), so they are instant and never need a
  * round trip.
  */
-export function GameViewerView({ rules, active }: { rules: Rules; active: boolean }) {
+export function GameViewerView({
+  rules,
+  active,
+  onOpenInSolver,
+}: {
+  rules: Rules;
+  active: boolean;
+  onOpenInSolver: (start: GameStartEvent, moves: GameMoveEvent[]) => void;
+}) {
   const [gameId, setGameId] = useState<string | null>(gameIdFromHash);
   const [starting, setStarting] = useState(false);
   const [startError, setStartError] = useState<string | null>(null);
@@ -253,6 +280,7 @@ export function GameViewerView({ rules, active }: { rules: Rules; active: boolea
         rules={rules}
         active={active}
         onNewGame={() => setGameId(null)}
+        onOpenInSolver={onOpenInSolver}
       />
     );
   }

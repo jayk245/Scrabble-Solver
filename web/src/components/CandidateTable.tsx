@@ -9,6 +9,9 @@ export interface CandidateTableProps {
   chosenLabel: string;
   /** Adds a per-row action button (e.g. "Play" or "Use"). */
   action?: { label: string; onClick: (candidate: Candidate) => void; disabled?: boolean };
+  /** A move to badge, e.g. the one played in the game. */
+  markedNotation?: string;
+  markedLabel?: string;
 }
 
 function formatSigned(value: number): string {
@@ -23,6 +26,8 @@ export function CandidateTable({
   showSim,
   chosenLabel,
   action,
+  markedNotation,
+  markedLabel = 'played',
 }: CandidateTableProps) {
   return (
     <div className="move-table-wrap candidate-table" onMouseLeave={() => onHover(null)}>
@@ -53,6 +58,9 @@ export function CandidateTable({
               <td className="notation">
                 {candidate.move.notation}
                 {candidate.chosen && <span className="badge">{chosenLabel}</span>}
+                {candidate.move.notation === markedNotation && (
+                  <span className="badge badge-muted">{markedLabel}</span>
+                )}
                 {candidate.sim?.pruned && <span className="badge badge-muted">pruned</span>}
               </td>
               <td className="numeric score">{candidate.move.score}</td>

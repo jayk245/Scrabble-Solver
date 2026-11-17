@@ -8,10 +8,12 @@ export interface SequenceInputProps {
    * to the number applied and an error message for the move that failed.
    */
   onApply: (moves: string[]) => Promise<{ applied: number; error: string | null }>;
+  /** Renders without its own panel, inside another one. */
+  embedded?: boolean;
 }
 
 /** Sets up a position by pasting a game's moves in notation. */
-export function SequenceInput({ onApply }: SequenceInputProps) {
+export function SequenceInput({ onApply, embedded = false }: SequenceInputProps) {
   const [text, setText] = useState('');
   const [message, setMessage] = useState<{ text: string; error: boolean } | null>(null);
   const [busy, setBusy] = useState(false);
@@ -33,11 +35,8 @@ export function SequenceInput({ onApply }: SequenceInputProps) {
     }
   };
 
-  return (
-    <section className="panel" aria-labelledby="sequence-heading">
-      <div className="panel-header">
-        <h2 id="sequence-heading">Paste moves</h2>
-      </div>
+  const body = (
+    <>
       <textarea
         className="text-input sequence-text"
         value={text}
@@ -54,16 +53,26 @@ export function SequenceInput({ onApply }: SequenceInputProps) {
           onClick={apply}
           disabled={busy || !text.trim()}
         >
-          Apply to board
+          Play from here
         </button>
       </div>
       {message && (
         <p className={`verdict ${message.error ? 'is-illegal' : 'is-legal'}`}>{message.text}</p>
       )}
       <p className="hint">
-        One move per line (or separated by ;). Racks are unknown, so each move is checked
-        for legal placement and valid words only.
+        One move per line (or separated by ;), played from the current position. Racks are unknown,
+        so each move is checked for legal placement and valid words only.
       </p>
+    </>
+  );
+
+  if (embedded) return body;
+  return (
+    <section className="panel" aria-labelledby="sequence-heading">
+      <div className="panel-header">
+        <h2 id="sequence-heading">Paste moves</h2>
+      </div>
+      {body}
     </section>
   );
 }

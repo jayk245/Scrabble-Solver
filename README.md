@@ -50,8 +50,9 @@ integration tests are skipped if the list has not been fetched.
 
 ## Web UI
 
-Three tabs in the browser: a **Solver** that tells you the best move in
-any position and lets you continue the game move by move, **Play** against
+Three tabs in the browser: a **Solver**, an analysis board that tells you
+the best move in any position of a game you enter or import, with
+variations and a whole-game review, **Play** against
 the bot, and a **Game viewer** for self-play and GCG replays (each
 described below). The C++ server (`apps/server`, cpp-httplib +
 nlohmann/json) loads the GADDAG once, answers JSON requests and streams
@@ -78,46 +79,98 @@ the JSON schema in `web/src/api/types.ts`.
 
 ### Solver
 
-Set up a game between two players: type tiles onto the board (click a
-square, type; Shift+letter for a blank) or paste a list of moves, then
-enter both names and scores, who is to move and the mover's rack. Tick
-"I know the opponent's rack" if you do (for example when going over a
-finished game). The unseen-tile panel is computed from the board and the
-known racks.
+An analysis board, like a chess engine's: enter or import a game, step
+through it, branch into variations and ask the engine for the best move in
+any position.
 
-**Solve** asks the engine (`POST /api/analyze`) and shows the best move,
-the ranked candidates with static equity, and:
+**Entering a game.** The toolbar above the board switches between two
+modes:
+
+* **Enter moves** (default): tiles placed on the board form a move for the
+  player to move, exactly as in the Play tab (click a square and type, or
+  click a square then a rack tile; Shift+letter for a blank; Space turns;
+  Backspace takes a tile back; Esc recalls). The engine checks the move live
+  (`/api/validate`) and shows its score; **Record move** (Enter) adds it,
+  credits the score and passes the turn. **Pass** and **Exchange** are
+  there too. The mover's rack is optional: a full rack (7 tiles, or every
+  tile left once the bag is empty) must supply the move; a partial one
+  (e.g. last turn's leave) is topped up with the tiles the move needed; an
+  empty one accepts any tiles. Racks are stored per position, so each
+  move remembers the rack it was played from, and the next turn starts
+  from the player's leave.
+* **Edit board**: set up any position (board, scores, who moves); tiles
+  typed here are not a move. Editing a position discards the moves after it
+  (you are asked first).
+
+Typed notation still works: **Check a move**, any candidate's **Play**, and
+**Import → Moves** (a pasted list, played from the current position).
+
+**Moving around.** Click any move in the move list, or use ◀ ▶ (Alt+←/→)
+and ⏮ ⏭ (Home/End). Recording a different move from an earlier position
+does not overwrite anything: it starts a **variation**, shown indented
+under the move it replaces (nested variations in brackets). **Promote to
+main line** makes the current line the main one; **Delete variation** /
+**Delete from here** (Ctrl+Z) removes the current move and what follows.
+**Show racks** hides every rack (board, move list, inputs) for presenting.
+
+**Engine.** **Solve** asks the engine (`POST /api/analyze`) about the
+current position with the mover's rack: the best move, the ranked
+candidates with static equity, and
 
 * with tiles in the bag, a Monte Carlo simulation of the top candidates
-  (mean ± standard error per candidate, iterations, pruning) as a list
-  and a bar chart. A known opponent rack is held fixed in every rollout
-  (`PlayerView::known_opponent_rack`); otherwise it is sampled from the
-  unseen tiles;
-* with the bag empty, the exact endgame solver: the final spread under
-  best play, whether the search completed, and the best line.
+  (mean ± standard error, iterations, pruning) as a list and a bar chart. A
+  known opponent rack ("I know the opponent's rack") is held fixed in every
+  rollout; otherwise it is sampled from the unseen tiles;
+* with the bag empty, the exact endgame solver: the final spread under best
+  play, whether the search completed, and the best line.
 
 Effort presets are Static, Quick (~1 s), Normal (≤ 2.5 s) and Deep
-(≤ 4.5 s). The server caps every request at 5 s and 4 threads and runs
-one search at a time. Hover a candidate to preview it on the board.
+(≤ 4.5 s). **Engine on** solves every position with a full rack as soon as
+you stop on it. Answers are cached per position (keyed by board, racks,
+scores and effort, so a revisited or transposed position is instant and an
+edited one is never shown a stale answer). Leaving a position aborts its
+request, and the server drops a search that is still queued for a client
+that has gone away, so stepping quickly through a game never builds a
+backlog. When the position has a recorded continuation, that move is
+evaluated too (badged "played"). Hover a candidate to preview it.
 
-**Play it** (or Play on any candidate, the full move list, or a move typed
-in "Check a move") applies the move through `/api/play`, adds its score to
-the mover and passes the turn. The next player's rack starts as their
-leave from their previous turn: type the tiles they drew, or **Fill
-randomly** from the unseen pool for a quick demo. **Auto** solves each new
-position as soon as the rack is complete. Every position is kept, so
-Back/Forward (Alt+←/→) walk the game, Undo (Ctrl+Z) drops the last move,
-editing an earlier position discards the moves after it, and **Export
-GCG** downloads the sequence. End-of-game rack adjustments are not applied
-in the solver.
+**Game review.** Analyses every main-line position whose mover's rack is
+known (choose the effort; progress is shown and Cancel stops it), then
+grades each move by the points it gave up against the engine's move:
+
+| Grade | Points lost |
+|---|---|
+| Best | < 1 |
+| Good | 1 – 4 |
+| Inaccuracy (?!) | 4 – 10 |
+| Mistake (?) | 10 – 20 |
+| Blunder (??) | ≥ 20 |
+
+Points are the difference in simulated mean spread when the review
+simulates (the played move is always simulated alongside the engine's
+candidates, via `"played"` in `/api/analyze`), the exact endgame value
+once the bag is empty (the solver's value minus the value of the position
+after the move), and static equity otherwise. The move list shows the
+symbols, the panel summarises each player (average loss and counts), and a
+chart plots the loss of every move, one player above the axis and the other
+below; click a bar to go to that move.
+
+**Import and export.** **Import → GCG** (paste or open a file) replaces the
+game with the record as the main line, with every rack it records
+(`POST /api/gcg` replays it with the same parser as the game viewer).
+**Open in Solver** in the Game viewer and on the Play tab's end screen
+loads that game with both players' racks. **Export GCG** downloads the
+main line. End-of-game rack adjustments are not applied in the solver.
 
 ```sh
 curl -s localhost:8080/api/analyze -d '{"rack": "EIQRSUZ", "effort": "quick",
+  "played": "D5 QUI(R)E",
   "board": ["...............", "...............", "...............",
             "...............", "...............", "...............",
             "...............", "...RETAINS.....", "...............",
             "...............", "...............", "...............",
             "...............", "...............", "..............."]}'
+curl -s localhost:8080/api/gcg -d "{\"gcg\": $(jq -Rs . < game.gcg)}"
 ```
 
 ### Play against the bot
@@ -143,7 +196,8 @@ replies; clicking a logged move shows the board at that point.
 
 When the game ends you see the result, the bot's rack, a GCG download and
 a review: for each of your moves the engine's best static move and the
-equity you gave up. Hover a review row to see that choice on the board.
+equity you gave up. Hover a review row to see that choice on the board. **Open in Solver** loads the finished game, with the bot's racks, into the
+Solver for a full review.
 
 How it works: the server is the referee. It holds the game (`Game`,
 board, both racks and the bag) in a `HumanGame` (`apps/server/human_game.h`),
